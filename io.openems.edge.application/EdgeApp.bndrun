@@ -177,6 +177,7 @@
 	bnd.identity;id='io.openems.edge.katek.edcom',\
 	bnd.identity;id='io.openems.edge.kostal',\
 	bnd.identity;id='io.openems.edge.meter.abb',\
+	bnd.identity;id='io.openems.edge.meter.acrel',\
 	bnd.identity;id='io.openems.edge.meter.artemes.am2',\
 	bnd.identity;id='io.openems.edge.meter.bcontrol.em300',\
 	bnd.identity;id='io.openems.edge.meter.bgetech',\
@@ -527,4 +528,5 @@
 	org.owasp.encoder;version='[1.5.0,1.5.1)',\
 	reactive-streams;version='[1.0.4,1.0.5)',\
 	rrd4j;version='[3.10.0,3.10.1)',\
-	stax2-api;version='[4.3.0,4.3.1)'
+	stax2-api;version='[4.3.0,4.3.1)',\
+	io.openems.edge.meter.acrel;version=snapshot
