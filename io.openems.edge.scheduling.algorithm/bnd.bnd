@@ -1,0 +1,14 @@
+Bundle-Name: EnergyPro Scheduling Algorithm (OpenEMS-free core)
+Bundle-Vendor: EnergyPro
+Bundle-Version: 1.0.0.${tstamp}
+
+# Deliberately empty: this bundle is plain Java with zero OpenEMS/OSGi
+# dependencies, so the per-resource DP table, Slot Cost, Least Slack Time
+# and forward-walk algorithms stay portable to any future runtime (e.g. a
+# Node.js/Homey port) without needing to be untangled from the OSGi
+# Component/Channel model first. See docs/architecture/controller-inventory.md's
+# "Implementation principle — keep every algorithm OpenEMS-free".
+-buildpath:
+
+-testpath: \
+	${testpath}
