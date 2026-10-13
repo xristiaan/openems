@@ -104,7 +104,7 @@ public final class PlanTableBuilder<M extends Enum<M>> {
 		var deviationCost = target.costOf(meanState);
 		var energyCostEur = result.energyUsedWh() / 1000.0 * timeSlot.energyPriceEurPerKwh();
 		var switchingCost = model.switchingMatrix().transition(priorMode, candidate).cost();
-		var slotCost = energyCostEur + deviationCost + switchingCost;
+		var slotCost = energyCostEur + deviationCost + switchingCost + result.deviceCostEur();
 
 		var newLock = ModeLock.next(model.switchingMatrix(), priorMode, lock, candidate);
 		var nextBucket = model.buckets().indexOf(result.nextState());
