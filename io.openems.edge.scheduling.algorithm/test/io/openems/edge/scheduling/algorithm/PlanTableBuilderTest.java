@@ -70,7 +70,7 @@ class PlanTableBuilderTest {
 				SlotTarget.point(80, 1000));
 
 		var table = PlanTableBuilder.build(model(), slots, targets);
-		var plan = ExecutionPlanCalculator.walk(table, slots, 0, TestMode.OFF, 0);
+		var plan = ExecutionPlanCalculator.walk(table, slots, targets, 0, TestMode.OFF, 0);
 
 		var modes = plan.slots().stream().map(PlannedSlot::mode).toList();
 		assertEquals(List.of(TestMode.ON, TestMode.ON, TestMode.ON, TestMode.ON, TestMode.OFF, TestMode.OFF), modes);

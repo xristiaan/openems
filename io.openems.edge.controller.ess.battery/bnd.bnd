@@ -10,6 +10,7 @@ Bundle-Version: 1.0.0.${tstamp}
 	io.openems.edge.controller.api,\
 	io.openems.edge.ess.api,\
 	io.openems.edge.scheduling.algorithm,\
+	io.openems.edge.scheduling.api,\
 
 -testpath: \
 	${testpath}

@@ -115,6 +115,7 @@
 	bnd.identity;id='io.openems.edge.controller.io.heatpump.sgready',\
 	bnd.identity;id='io.openems.edge.controller.pvinverter.fixpowerlimit',\
 	bnd.identity;id='io.openems.edge.controller.pvinverter.selltogridlimit',\
+	bnd.identity;id='io.openems.edge.controller.scheduling.dp',\
 	bnd.identity;id='io.openems.edge.controller.symmetric.balancingschedule',\
 	bnd.identity;id='io.openems.edge.controller.symmetric.fixreactivepower',\
 	bnd.identity;id='io.openems.edge.controller.symmetric.limitactivepower',\
@@ -532,4 +533,6 @@
 	stax2-api;version='[4.3.0,4.3.1)',\
 	io.openems.edge.meter.acrel;version=snapshot,\
 	io.openems.edge.controller.ess.battery;version=snapshot,\
-	io.openems.edge.scheduling.algorithm;version=snapshot
+	io.openems.edge.scheduling.algorithm;version=snapshot,\
+	io.openems.edge.controller.scheduling.dp;version=snapshot,\
+	io.openems.edge.scheduling.api;version=snapshot

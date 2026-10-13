@@ -7,6 +7,7 @@ import static org.osgi.service.component.annotations.ReferencePolicyOption.GREED
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
+import java.util.OptionalInt;
 
 import org.osgi.service.cm.ConfigurationAdmin;
 import org.osgi.service.component.ComponentContext;
@@ -34,23 +35,18 @@ import io.openems.edge.scheduling.algorithm.SlotTarget;
 import io.openems.edge.scheduling.algorithm.StateBuckets;
 import io.openems.edge.scheduling.algorithm.TargetSetpointResolver;
 import io.openems.edge.scheduling.algorithm.TimeSlot;
+import io.openems.edge.scheduling.api.PlanSummary;
+import io.openems.edge.scheduling.api.PlanableController;
 
 /**
- * The Battery Controller: a Plan-able Controller for a battery ESS. Day-ahead
- * planning ({@link #createPlan}) and real-time execution
+ * The Battery Controller: a Plan-able Controller for a battery ESS,
+ * implementing {@link PlanableController} so the DP Controller can call it
+ * uniformly alongside any other resource type. Day-ahead planning
+ * ({@link #createPlan}) and real-time execution
  * ({@link #executePlan}/{@link #run}) are split exactly as the Plan-able
  * Controller interface specifies — the actual physics live in
  * {@link BatteryPhysics}, a plain Java class with no OpenEMS dependency at
  * all, per the project's "keep every algorithm OpenEMS-free" principle.
- *
- * <p>
- * <b>Known, deliberate gap:</b> nothing yet calls {@link #createPlan}/
- * {@link #executePlan} — that is the DP Controller's job (not built yet; see
- * {@code docs/architecture/controller-inventory.md}'s Open Items), which is
- * meant to supply the price forecast and per-resource power budget this
- * Controller needs to plan against. Until then, {@link #run} correctly holds
- * no power constraint and reports {@code NO_PLAN_AVAILABLE} — this
- * Controller is fully wired and ready, just has nothing to execute yet.
  */
 @Designate(ocd = Config.class, factory = true)
 @Component(//
@@ -59,7 +55,7 @@ import io.openems.edge.scheduling.algorithm.TimeSlot;
 		configurationPolicy = ConfigurationPolicy.REQUIRE //
 )
 public class ControllerEssBatteryImpl extends AbstractOpenemsComponent
-		implements ControllerEssBattery, Controller, OpenemsComponent {
+		implements ControllerEssBattery, PlanableController, Controller, OpenemsComponent {
 
 	private static final StateBuckets SOC_BUCKETS = new StateBuckets(0.0, 1.0, 0.02);
 
@@ -76,6 +72,10 @@ public class ControllerEssBatteryImpl extends AbstractOpenemsComponent
 	private BatteryMode priorMode = BatteryMode.OFF;
 	private int lockRemaining = 0;
 
+	// Computed by createPlan, not yet committed.
+	private ExecutionPlan<BatteryMode> pendingPlan;
+
+	// Committed by executePlan; what run()/executeSlot actually acts on.
 	private ExecutionPlan<BatteryMode> activePlan;
 	private Instant activePlanStart;
 
@@ -99,35 +99,46 @@ public class ControllerEssBatteryImpl extends AbstractOpenemsComponent
 		super.deactivate();
 	}
 
-	/**
-	 * Create Plan: builds an execution plan starting from the real,
-	 * currently-measured SoC.
-	 *
-	 * @param slots   one entry per slot: energy price and the power budget
-	 *                    assigned to this resource (by the DP Controller)
-	 * @param targets one entry per slot: the deviation-cost target, same
-	 *                    length as {@code slots}
-	 * @return the execution plan
-	 * @throws OpenemsNamedException if the real SoC can't be read
-	 */
-	public ExecutionPlan<BatteryMode> createPlan(List<TimeSlot> slots, List<SlotTarget> targets)
-			throws OpenemsNamedException {
+	@Override
+	public PlanSummary createPlan(List<TimeSlot> slots) throws OpenemsNamedException {
+		// Target is encapsulated here, not supplied by the DP Controller: a
+		// uniform comfort band every slot, since Battery has no schedule or
+		// deadline of its own (see slackSlots()).
+		var target = new SlotTarget(this.config.socMinNormal(), this.config.socMaxNormal(),
+				this.config.deviationCostEurPerKwh());
+		var targets = java.util.Collections.nCopies(slots.size(), target);
+
 		var model = this.buildModel(targets);
 		var table = PlanTableBuilder.build(model, slots, targets);
 		var currentSoc = this.ess.getSoc().getOrError() / 100.0;
-		return ExecutionPlanCalculator.walk(table, slots, currentSoc, this.priorMode, this.lockRemaining);
+		var plan = ExecutionPlanCalculator.walk(table, slots, targets, currentSoc, this.priorMode,
+				this.lockRemaining);
+		this.pendingPlan = plan;
+
+		var slotHours = BatteryPhysics.SLOT_DURATION_SECONDS / 3600.0;
+		var slotCount = plan.slots().size();
+		var powerPerSlotW = new double[slotCount];
+		var costPerSlotEur = new double[slotCount];
+		for (var i = 0; i < slotCount; i++) {
+			var plannedSlot = plan.slots().get(i);
+			powerPerSlotW[i] = plannedSlot.energyUsedWh() / slotHours;
+			costPerSlotEur[i] = plannedSlot.costEur();
+		}
+		return new PlanSummary(powerPerSlotW, costPerSlotEur);
 	}
 
-	/**
-	 * Execute Plan: pushes a plan into this Controller, to be executed slot
-	 * by slot starting at {@code planStart} as {@link #run} is called.
-	 *
-	 * @param plan      the execution plan from {@link #createPlan}
-	 * @param planStart the absolute time slot 0 of {@code plan} begins
-	 */
-	public void executePlan(ExecutionPlan<BatteryMode> plan, Instant planStart) {
-		this.activePlan = plan;
+	@Override
+	public void executePlan(Instant planStart) {
+		this.activePlan = this.pendingPlan;
 		this.activePlanStart = planStart;
+	}
+
+	@Override
+	public OptionalInt slackSlots() {
+		// Battery is a comfort-band resource (stay within a SoC range), not a
+		// deadline resource — it has nothing forcing it to a specific value
+		// by a specific time, so it's never Tier-1-urgent.
+		return OptionalInt.empty();
 	}
 
 	@Override

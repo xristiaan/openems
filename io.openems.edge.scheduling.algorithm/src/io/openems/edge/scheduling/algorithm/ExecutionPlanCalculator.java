@@ -24,6 +24,8 @@ public final class ExecutionPlanCalculator {
 	 * @param table          the planning table from {@link PlanTableBuilder}
 	 * @param slots          the same per-slot energy price/power budget used
 	 *                           to build {@code table}
+	 * @param targets        the same per-slot deviation-cost targets used to
+	 *                           build {@code table}
 	 * @param currentState   the real, measured current state (not a bucket
 	 *                           value)
 	 * @param currentMode    the mode the device is actually in right now
@@ -32,7 +34,7 @@ public final class ExecutionPlanCalculator {
 	 * @return the execution plan
 	 */
 	public static <M extends Enum<M>> ExecutionPlan<M> walk(PlanTable<M> table, List<TimeSlot> slots,
-			double currentState, M currentMode, int lockRemaining) {
+			List<SlotTarget> targets, double currentState, M currentMode, int lockRemaining) {
 		var model = table.model();
 		var plannedSlots = new ArrayList<PlannedSlot<M>>(table.slotCount());
 
@@ -46,10 +48,14 @@ public final class ExecutionPlanCalculator {
 			var mode = cell.bestMode();
 
 			var targetSetpoint = model.targetSetpointResolver().resolve(mode, slot);
-			var result = model.stateTransitionFunction().apply(state, mode, slot, slots.get(slot).availablePowerW(),
+			var timeSlot = slots.get(slot);
+			var result = model.stateTransitionFunction().apply(state, mode, slot, timeSlot.availablePowerW(),
 					targetSetpoint);
+			var costEur = SlotCost.of(timeSlot, targets.get(slot), model.switchingMatrix(), priorMode, mode, state,
+					result);
 
-			plannedSlots.add(new PlannedSlot<>(mode, targetSetpoint, result.energyUsedWh(), result.nextState()));
+			plannedSlots.add(new PlannedSlot<>(mode, targetSetpoint, result.energyUsedWh(), costEur,
+					result.nextState()));
 
 			lock = ModeLock.next(model.switchingMatrix(), priorMode, lock, mode);
 			priorMode = mode;
