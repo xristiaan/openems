@@ -19,6 +19,7 @@ import org.osgi.service.component.annotations.Reference;
 import org.osgi.service.metatype.annotations.Designate;
 
 import io.openems.common.exceptions.OpenemsError.OpenemsNamedException;
+import io.openems.edge.common.channel.IntegerReadChannel;
 import io.openems.edge.common.component.AbstractOpenemsComponent;
 import io.openems.edge.common.component.OpenemsComponent;
 import io.openems.edge.common.type.Phase.SingleOrAllPhase;
@@ -199,15 +200,43 @@ public class ControllerEssBatteryImpl extends AbstractOpenemsComponent
 				this.config.chargeEfficiency(), this.config.dischargeEfficiency(), //
 				this.config.degradationCostEurPerKwh(), this.config.degradationCostBoostMultiplier());
 
-		TargetSetpointResolver<BatteryMode> targetSetpointResolver = (mode, slot) -> {
-			if (mode == BatteryMode.OFF) {
-				return null;
-			}
-			var target = targets.get(slot);
-			return (target.min() + target.max()) / 2.0;
-		};
+		var setpointSoc = this.setpointSoc();
+		TargetSetpointResolver<BatteryMode> targetSetpointResolver = (mode, slot) -> resolveTarget(mode,
+				targets.get(slot), setpointSoc);
 
 		return new PlanableResourceModel<>(BatteryMode.values(), SOC_BUCKETS, new BatteryModeSwitchingMatrix(),
 				new BatteryPhysics(physicsConfig), targetSetpointResolver);
+	}
+
+	/**
+	 * The optional external set-point, from {@link ControllerEssBattery.ChannelId#SETPOINT_SOC}.
+	 *
+	 * @return the set-point as a SoC fraction (0-1), or null if none is set
+	 */
+	private Double setpointSoc() {
+		IntegerReadChannel channel = this.channel(ControllerEssBattery.ChannelId.SETPOINT_SOC);
+		var percent = channel.value();
+		return percent.isDefined() ? Math.max(0, Math.min(100, percent.get())) / 100.0 : null;
+	}
+
+	/**
+	 * Resolves the target a mode's physics seeks: nothing in OFF; otherwise
+	 * the external set-point if one is given (optional in every mode,
+	 * including ON), else the middle of the slot's SoC band. The physics
+	 * itself still caps movement at the mode's own band.
+	 *
+	 * @param mode        the candidate mode
+	 * @param target      the slot's deviation-cost target (the SoC band)
+	 * @param setpointSoc the external set-point as a fraction, or null
+	 * @return the target SoC fraction, or null for OFF
+	 */
+	static Double resolveTarget(BatteryMode mode, SlotTarget target, Double setpointSoc) {
+		if (mode == BatteryMode.OFF) {
+			return null;
+		}
+		if (setpointSoc != null) {
+			return setpointSoc;
+		}
+		return (target.min() + target.max()) / 2.0;
 	}
 }

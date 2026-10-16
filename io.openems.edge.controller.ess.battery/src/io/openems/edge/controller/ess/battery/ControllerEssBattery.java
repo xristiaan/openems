@@ -32,7 +32,17 @@ public interface ControllerEssBattery extends Controller, OpenemsComponent {
 		 * this Controller holds no power constraint while this is set.
 		 * Expected until the DP Controller exists to supply plans.
 		 */
-		NO_PLAN_AVAILABLE(Doc.of(Level.INFO));
+		NO_PLAN_AVAILABLE(Doc.of(Level.INFO)),
+
+		/**
+		 * Optional externally supplied target SoC, in percent (0-100) — e.g.
+		 * written via the MQTT write-back bridge. When set, every mode with a
+		 * target (ON, BOOST, FORCED, FORCED_BOOST; not OFF) moves toward it
+		 * instead of the middle of its SoC band, still within that mode's own
+		 * band and power limits. Empty means no set-point.
+		 */
+		SETPOINT_SOC(Doc.of(INTEGER)//
+				.unit(Unit.PERCENT));
 
 		final Doc doc;
 

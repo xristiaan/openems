@@ -7,7 +7,10 @@ package io.openems.edge.scheduling.algorithm;
  * @param energyPriceEurPerKwh the forecasted/known energy price for this slot
  * @param availablePowerW      the power budget assigned to this resource for
  *                                 this slot (by the DP Controller's
- *                                 Tier-1/Tier-2 arbitration), in watts
+ *                                 Tier-1/Tier-2 arbitration), in watts —
+ *                                 consumption-positive; <em>negative</em>
+ *                                 for a producing resource (PV), meaning
+ *                                 "produce at most this much"
  */
 public record TimeSlot(double energyPriceEurPerKwh, double availablePowerW) {
 }

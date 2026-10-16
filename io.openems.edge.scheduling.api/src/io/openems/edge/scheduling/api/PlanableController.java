@@ -2,6 +2,7 @@ package io.openems.edge.scheduling.api;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.Optional;
 import java.util.OptionalInt;
 
 import io.openems.common.exceptions.OpenemsError.OpenemsNamedException;
@@ -58,4 +59,25 @@ public interface PlanableController extends OpenemsComponent {
 	 * @return the slack in slots, or empty if this resource has no deadline
 	 */
 	OptionalInt slackSlots();
+
+	/**
+	 * Production forecast: for a producing resource (PV), the maximum power it
+	 * could produce each slot given the forecast, in watts, as positive
+	 * magnitudes. A resource that reports one is arbitrated as a producer: it
+	 * gets a <em>negative</em> per-slot budget ("produce at most this much"),
+	 * bounded by this forecast and reduced only when the grid export capacity
+	 * requires it, and its production adds to the import capacity available
+	 * to consuming resources in the same slot.
+	 *
+	 * <p>
+	 * Consuming and bidirectional resources (a battery) report empty and keep
+	 * the ordinary consumption-positive budget.
+	 *
+	 * @param slotCount the number of slots being planned
+	 * @return the forecast, one entry per slot, or empty if this resource is
+	 *             not a producer
+	 */
+	default Optional<double[]> productionForecastW(int slotCount) {
+		return Optional.empty();
+	}
 }

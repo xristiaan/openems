@@ -31,11 +31,14 @@ import io.openems.edge.timeofusetariff.api.TimeOfUseTariff;
  * result by calling {@code executePlan} on each resource.
  *
  * <p>
- * <b>Known, deliberate simplifications:</b> no PV-production forecast
- * exists yet, so {@code availableCapacityW} is a flat
- * {@code gridCapacityW - baseLoadW} every slot, not reduced by expected PV
- * self-consumption headroom. Tier-2 ordering is plain registration order,
- * not the marginal-cost refinement logged as a post-MVP item.
+ * <b>Known, deliberate simplifications:</b> {@code availableCapacityW} is a
+ * flat {@code gridCapacityW - baseLoadW} every slot, and the export capacity
+ * a flat {@code gridExportCapacityW + baseLoadW} (the base load absorbs
+ * production too). Local production is not part of either: a producing
+ * resource (PV) reports its own forecast and {@link DpArbitration} adds its
+ * production to the consumers' capacity per slot. Tier-2 ordering is plain
+ * registration order, not the marginal-cost refinement logged as a post-MVP
+ * item.
  */
 @Designate(ocd = Config.class, factory = true)
 @Component(//
@@ -104,9 +107,10 @@ public class ControllerSchedulingDpImpl extends AbstractOpenemsComponent impleme
 
 		var priceEurPerKwh = this.priceForecast();
 		var availableCapacityW = this.availableCapacity(priceEurPerKwh.length);
+		var availableExportCapacityW = this.availableExportCapacity(priceEurPerKwh.length);
 
-		DpArbitration.run(resources, priceEurPerKwh, availableCapacityW, this.config.maxRounds(),
-				this.config.convergenceThresholdFraction());
+		DpArbitration.run(resources, priceEurPerKwh, availableCapacityW, availableExportCapacityW,
+				this.config.maxRounds(), this.config.convergenceThresholdFraction());
 
 		for (var resource : resources) {
 			resource.executePlan(now);
@@ -144,6 +148,12 @@ public class ControllerSchedulingDpImpl extends AbstractOpenemsComponent impleme
 	private double[] availableCapacity(int slotCount) {
 		var out = new double[slotCount];
 		Arrays.fill(out, Math.max(0, this.config.gridCapacityW() - this.config.baseLoadW()));
+		return out;
+	}
+
+	private double[] availableExportCapacity(int slotCount) {
+		var out = new double[slotCount];
+		Arrays.fill(out, Math.max(0, this.config.gridExportCapacityW() + this.config.baseLoadW()));
 		return out;
 	}
 }

@@ -25,9 +25,18 @@ import io.openems.edge.scheduling.api.PlanableController;
  * up to whatever capacity remains; Tier-2 resources (no deadline,
  * opportunistic) get whatever's left over, in registration order for now —
  * marginal-cost-based Tier-2 ordering is a known, logged post-MVP
- * refinement. A resource supplying power back (a negative request —
- * discharging, PV production) is always granted in full; it doesn't
- * compete for import capacity.
+ * refinement.
+ *
+ * <p>
+ * Supply: any power a resource requests to supply back (a negative request —
+ * discharging, PV production) adds to the capacity consumers can draw in
+ * that slot, since it offsets grid import. A non-producer supplying back
+ * (battery discharge) is always re-offered its full ceiling. A producer (a
+ * resource reporting {@link PlanableController#productionForecastW(int)})
+ * instead gets a <em>negative</em> budget, bounded by its forecast and
+ * reduced only as far as the export capacity requires: export headroom is
+ * the export capacity plus whatever consumers were granted, minus any other
+ * supply, shared across producers in registration order.
  */
 final class DpArbitration {
 
@@ -42,6 +51,10 @@ final class DpArbitration {
 	 *                                    price
 	 * @param availableCapacityW      one entry per slot: the total import
 	 *                                    capacity available to share
+	 * @param availableExportCapacityW one entry per slot: the total export
+	 *                                    capacity, as a positive magnitude —
+	 *                                    how much net production may flow
+	 *                                    back to the grid
 	 * @param maxRounds               n: the hard cap on rounds
 	 * @param convergenceThresholdFraction y: stop early once no resource's
 	 *                                    budget changes by more than this
@@ -54,14 +67,16 @@ final class DpArbitration {
 	 *                                   call fails
 	 */
 	static Map<String, double[]> run(List<PlanableController> resources, double[] priceEurPerKwh,
-			double[] availableCapacityW, int maxRounds, double convergenceThresholdFraction)
-			throws OpenemsNamedException {
+			double[] availableCapacityW, double[] availableExportCapacityW, int maxRounds,
+			double convergenceThresholdFraction) throws OpenemsNamedException {
 		var slotCount = priceEurPerKwh.length;
-		var budget = initialBudget(resources, availableCapacityW, slotCount);
+		var forecasts = productionForecasts(resources, slotCount);
+		var budget = initialBudget(resources, forecasts, availableCapacityW);
 
 		for (var round = 0; round < maxRounds; round++) {
 			var requested = createPlans(resources, priceEurPerKwh, budget);
-			var nextBudget = arbitrate(resources, requested, availableCapacityW, slotCount);
+			var nextBudget = arbitrate(resources, forecasts, requested, availableCapacityW,
+					availableExportCapacityW, slotCount);
 			var converged = hasConverged(budget, nextBudget, convergenceThresholdFraction);
 			budget = nextBudget;
 			if (converged) {
@@ -78,13 +93,45 @@ final class DpArbitration {
 		return budget;
 	}
 
+	private static Map<String, double[]> productionForecasts(List<PlanableController> resources, int slotCount) {
+		var forecasts = new LinkedHashMap<String, double[]>();
+		for (var resource : resources) {
+			resource.productionForecastW(slotCount).ifPresent(forecast -> {
+				if (forecast.length != slotCount) {
+					throw new IllegalArgumentException(
+							"Production forecast of " + resource.id() + " must have " + slotCount + " slots");
+				}
+				forecasts.put(resource.id(), forecast.clone());
+			});
+		}
+		return forecasts;
+	}
+
 	private static Map<String, double[]> initialBudget(List<PlanableController> resources,
-			double[] availableCapacityW, int slotCount) {
+			Map<String, double[]> forecasts, double[] availableCapacityW) {
+		// Round 0 is optimistic for consumers: import capacity plus all
+		// forecast production, so a consumer can ask for PV-backed power at
+		// all — its later requests are clipped to whatever it was offered.
+		var consumerCeilingW = availableCapacityW.clone();
+		for (var forecast : forecasts.values()) {
+			for (var i = 0; i < consumerCeilingW.length; i++) {
+				consumerCeilingW[i] += Math.max(0, forecast[i]);
+			}
+		}
 		var budget = new LinkedHashMap<String, double[]>();
 		for (var resource : resources) {
-			budget.put(resource.id(), availableCapacityW.clone());
+			var forecast = forecasts.get(resource.id());
+			budget.put(resource.id(), forecast == null ? consumerCeilingW.clone() : negated(forecast));
 		}
 		return budget;
+	}
+
+	private static double[] negated(double[] magnitudes) {
+		var out = new double[magnitudes.length];
+		for (var i = 0; i < magnitudes.length; i++) {
+			out[i] = -Math.max(0, magnitudes[i]);
+		}
+		return out;
 	}
 
 	private static Map<String, PlanSummary> createPlans(List<PlanableController> resources, double[] priceEurPerKwh,
@@ -106,12 +153,19 @@ final class DpArbitration {
 	}
 
 	private static Map<String, double[]> arbitrate(List<PlanableController> resources,
-			Map<String, PlanSummary> requested, double[] availableCapacityW, int slotCount) {
-		var tier1 = resources.stream() //
+			Map<String, double[]> forecasts, Map<String, PlanSummary> requested, double[] availableCapacityW,
+			double[] availableExportCapacityW, int slotCount) {
+		var producers = resources.stream() //
+				.filter(resource -> forecasts.containsKey(resource.id())) //
+				.toList();
+		var others = resources.stream() //
+				.filter(resource -> !forecasts.containsKey(resource.id())) //
+				.toList();
+		var tier1 = others.stream() //
 				.filter(resource -> resource.slackSlots().isPresent()) //
 				.sorted(Comparator.comparingInt(resource -> resource.slackSlots().getAsInt())) //
 				.toList();
-		var tier2 = resources.stream() //
+		var tier2 = others.stream() //
 				.filter(resource -> resource.slackSlots().isEmpty()) //
 				.toList();
 
@@ -121,15 +175,41 @@ final class DpArbitration {
 		}
 
 		for (var slot = 0; slot < slotCount; slot++) {
-			var remaining = availableCapacityW[slot];
+			var producedW = 0.0;
+			for (var resource : producers) {
+				producedW += supplyOf(requested, resource, slot);
+			}
+			var otherSupplyW = 0.0;
+			for (var resource : others) {
+				otherSupplyW += supplyOf(requested, resource, slot);
+			}
+
+			// Consumers: import capacity, plus whatever is being supplied
+			// locally in the same slot.
+			var start = availableCapacityW[slot] + producedW + otherSupplyW;
+			var remaining = start;
 			for (var resource : tier1) {
 				remaining = allocateOne(resource, requested, nextBudget, slot, remaining, availableCapacityW[slot]);
 			}
 			for (var resource : tier2) {
 				remaining = allocateOne(resource, requested, nextBudget, slot, remaining, availableCapacityW[slot]);
 			}
+			var consumedW = start - remaining;
+
+			// Producers: bounded by their forecast, curtailed only as far as
+			// the export capacity requires.
+			var exportHeadroomW = availableExportCapacityW[slot] + consumedW - otherSupplyW;
+			for (var resource : producers) {
+				var grant = Math.min(Math.max(0, forecasts.get(resource.id())[slot]), Math.max(0, exportHeadroomW));
+				nextBudget.get(resource.id())[slot] = -grant;
+				exportHeadroomW -= grant;
+			}
 		}
 		return nextBudget;
+	}
+
+	private static double supplyOf(Map<String, PlanSummary> requested, PlanableController resource, int slot) {
+		return Math.max(0, -requested.get(resource.id()).powerPerSlotW()[slot]);
 	}
 
 	private static double allocateOne(PlanableController resource, Map<String, PlanSummary> requested,

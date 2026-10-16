@@ -22,6 +22,9 @@ import org.osgi.service.metatype.annotations.ObjectClassDefinition;
 	@AttributeDefinition(name = "Grid capacity", description = "The installation's max grid import capacity, in watts (e.g. 3x25A at 230V ~= 17250W).")
 	double gridCapacityW() default 17_250;
 
+	@AttributeDefinition(name = "Grid export capacity", description = "The installation's max grid export (feed-in) capacity, in watts. Producing resources (PV) are only curtailed by the arbitration when net production would exceed this.")
+	double gridExportCapacityW() default 17_250;
+
 	@AttributeDefinition(name = "Base load", description = "Fixed deduction for small, not-individually-planned usage (lights, computers, etc.), in watts. The MVP's flat stand-in for the production product's domestic usage forecast.")
 	double baseLoadW() default 500;
 

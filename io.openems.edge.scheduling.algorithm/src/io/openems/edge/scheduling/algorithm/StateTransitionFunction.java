@@ -22,7 +22,9 @@ public interface StateTransitionFunction<M> {
 	 *                            inferred {@code T_scheduleTarget(slot)})
 	 * @param availablePowerW the power budget for this slot, in watts —
 	 *                            the mode's own rated power is clipped to
-	 *                            this; pass {@link Double#MAX_VALUE} to mean
+	 *                            this; negative for a producing resource
+	 *                            (its production is clipped to the
+	 *                            magnitude); pass {@link Double#MAX_VALUE} to mean
 	 *                            "no budget cap, physical limit only" (used
 	 *                            by {@link LeastSlackTimeCalculator})
 	 * @param targetSetpoint  the target this mode's own physics should seek,
