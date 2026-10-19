@@ -168,12 +168,14 @@ public class ControllerPvImpl extends AbstractOpenemsComponent
 		var slotCount = plan.slots().size();
 		var powerPerSlotW = new double[slotCount];
 		var costPerSlotEur = new double[slotCount];
+		var modePerSlot = new String[slotCount];
 		for (var i = 0; i < slotCount; i++) {
 			var plannedSlot = plan.slots().get(i);
 			powerPerSlotW[i] = plannedSlot.energyUsedWh() / slotHours;
 			costPerSlotEur[i] = plannedSlot.costEur();
+			modePerSlot[i] = plannedSlot.mode().name();
 		}
-		return new PlanSummary(powerPerSlotW, costPerSlotEur);
+		return new PlanSummary(powerPerSlotW, costPerSlotEur, modePerSlot, null);
 	}
 
 	@Override

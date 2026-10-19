@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import java.time.Instant;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalInt;
 
@@ -113,6 +114,86 @@ class DpArbitrationTest {
 		public Optional<double[]> productionForecastW(int slotCount) {
 			return Optional.of(this.forecastW.clone());
 		}
+	}
+
+	/**
+	 * A fake balancing resource (battery): follows whatever residual it is
+	 * given — absorbs all surplus, provides all shortfall.
+	 */
+	private static final class FakeBalancer extends AbstractDummyOpenemsComponent<FakeBalancer>
+			implements PlanableController {
+
+		FakeBalancer(String id) {
+			super(id, OpenemsComponent.ChannelId.values());
+		}
+
+		@Override
+		protected FakeBalancer self() {
+			return this;
+		}
+
+		@Override
+		public PlanSummary createPlan(List<TimeSlot> slots) {
+			var power = new double[slots.size()];
+			for (var i = 0; i < slots.size(); i++) {
+				power[i] = slots.get(i).availablePowerW();
+			}
+			return new PlanSummary(power, new double[slots.size()]);
+		}
+
+		@Override
+		public void executePlan(Instant planStart) {
+		}
+
+		@Override
+		public OptionalInt slackSlots() {
+			return OptionalInt.empty();
+		}
+
+		@Override
+		public boolean balancesResidual() {
+			return true;
+		}
+	}
+
+	private static Map<String, double[]> runWithBaseLoad(List<PlanableController> resources, double[] capacity,
+			double baseLoadW) throws OpenemsNamedException {
+		var baseLoad = new double[capacity.length];
+		Arrays.fill(baseLoad, baseLoadW);
+		return DpArbitration.runDetailed(resources, new double[capacity.length], capacity,
+				unlimitedExport(capacity.length), baseLoad, 4, 0.05).budget();
+	}
+
+	@Test
+	void aBalancingResourceGetsTheSurplusToAbsorb() throws OpenemsNamedException {
+		var pv = new FakeProducer("pv0", 4_000);
+		var battery = new FakeBalancer("battery0");
+
+		var budget = runWithBaseLoad(List.of(pv, battery), new double[] { 12_000 }, 500);
+
+		assertEquals(3_500, budget.get("battery0")[0], 1e-6, "4kW PV - 0.5kW base load");
+	}
+
+	@Test
+	void aBalancingResourceGetsTheShortfallToProvide() throws OpenemsNamedException {
+		var consumer = new FakeController("boiler0", 1_000, OptionalInt.empty());
+		var battery = new FakeBalancer("battery0");
+
+		var budget = runWithBaseLoad(List.of(consumer, battery), new double[] { 12_000 }, 500);
+
+		assertEquals(-1_500, budget.get("battery0")[0], 1e-6, "1kW boiler + 0.5kW base load");
+		assertEquals(1_000, budget.get("boiler0")[0], 1e-6);
+	}
+
+	@Test
+	void aBalancingResourcesSupplyDoesNotAddToTheConsumersCapacity() throws OpenemsNamedException {
+		var consumer = new FakeController("boiler0", 5_000, OptionalInt.empty());
+		var battery = new FakeBalancer("battery0");
+
+		var budget = runWithBaseLoad(List.of(consumer, battery), new double[] { 2_000 }, 0);
+
+		assertEquals(2_000, budget.get("boiler0")[0], 1e-6, "only the import capacity, not the battery");
+		assertEquals(-2_000, budget.get("battery0")[0], 1e-6, "it provides the boiler's share");
 	}
 
 	private static double[] unlimitedExport(int slotCount) {

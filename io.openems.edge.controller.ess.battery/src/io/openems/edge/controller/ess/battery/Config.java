@@ -63,8 +63,8 @@ import org.osgi.service.metatype.annotations.ObjectClassDefinition;
 	@AttributeDefinition(name = "Discharge efficiency", description = "Round-trip discharge efficiency (0-1).")
 	double dischargeEfficiency() default 0.95;
 
-	@AttributeDefinition(name = "Degradation cost", description = "c_deg: cost of battery degradation from cycling, in Euro per kWh of throughput.")
-	double degradationCostEurPerKwh() default 0.10;
+	@AttributeDefinition(name = "Degradation cost", description = "c_deg: cost of battery degradation from cycling, in Euro per kWh moved, charged in both directions (a round trip costs twice this).")
+	double degradationCostEurPerKwh() default 0.03;
 
 	@AttributeDefinition(name = "Degradation cost, boost multiplier", description = "c_deg_boost: multiplier applied to the degradation cost when the operating C-rate is at or above 0.5C.")
 	double degradationCostBoostMultiplier() default 2.0;

@@ -23,6 +23,7 @@ import io.openems.common.referencetarget.GenerateTargetsFromReferences;
 import io.openems.edge.common.channel.IntegerReadChannel;
 import io.openems.edge.common.component.AbstractOpenemsComponent;
 import io.openems.edge.common.component.OpenemsComponent;
+import io.openems.edge.common.sum.Sum;
 import io.openems.edge.common.type.Phase.SingleOrAllPhase;
 import io.openems.edge.controller.api.Controller;
 import io.openems.edge.ess.api.ManagedSymmetricEss;
@@ -69,6 +70,9 @@ public class ControllerEssBatteryImpl extends AbstractOpenemsComponent
 			target = "(&(id=${config.ess_id})(enabled=true))")
 	private ManagedSymmetricEss ess;
 
+	@Reference
+	private Sum sum;
+
 	private Config config;
 
 	// Forward-walk mode-lock state, carried from one plan/slot to the next.
@@ -111,7 +115,7 @@ public class ControllerEssBatteryImpl extends AbstractOpenemsComponent
 				this.config.deviationCostEurPerKwh());
 		var targets = java.util.Collections.nCopies(slots.size(), target);
 
-		var model = this.buildModel(targets);
+		var model = this.buildModel();
 		var table = PlanTableBuilder.build(model, slots, targets);
 		var currentSoc = this.ess.getSoc().getOrError() / 100.0;
 		var plan = ExecutionPlanCalculator.walk(table, slots, targets, currentSoc, this.priorMode,
@@ -122,12 +126,16 @@ public class ControllerEssBatteryImpl extends AbstractOpenemsComponent
 		var slotCount = plan.slots().size();
 		var powerPerSlotW = new double[slotCount];
 		var costPerSlotEur = new double[slotCount];
+		var modePerSlot = new String[slotCount];
+		var socPerSlot = new double[slotCount];
 		for (var i = 0; i < slotCount; i++) {
 			var plannedSlot = plan.slots().get(i);
 			powerPerSlotW[i] = plannedSlot.energyUsedWh() / slotHours;
 			costPerSlotEur[i] = plannedSlot.costEur();
+			modePerSlot[i] = plannedSlot.mode().name();
+			socPerSlot[i] = plannedSlot.endState();
 		}
-		return new PlanSummary(powerPerSlotW, costPerSlotEur);
+		return new PlanSummary(powerPerSlotW, costPerSlotEur, modePerSlot, socPerSlot);
 	}
 
 	@Override
@@ -142,6 +150,13 @@ public class ControllerEssBatteryImpl extends AbstractOpenemsComponent
 		// deadline resource — it has nothing forcing it to a specific value
 		// by a specific time, so it's never Tier-1-urgent.
 		return OptionalInt.empty();
+	}
+
+	@Override
+	public boolean balancesResidual() {
+		// The battery picks up the plan's slack: it absorbs surplus and
+		// provides shortfall, in the direction of its budget.
+		return true;
 	}
 
 	@Override
@@ -169,19 +184,43 @@ public class ControllerEssBatteryImpl extends AbstractOpenemsComponent
 		this.priorMode = plannedSlot.mode();
 		this.channel(ControllerEssBattery.ChannelId.PLANNED_MODE).setNextValue(plannedSlot.mode().name());
 
-		// Spread the slot's planned energy evenly across its 900s — a
-		// simplification of the physics' own burst-then-idle timing within
-		// the slot (see BatteryPhysics), which would need sub-slot state to
-		// reproduce exactly. Reaches the same end-of-slot SoC either way.
-		var slotHours = BatteryPhysics.SLOT_DURATION_SECONDS / 3600.0;
-		var averagePowerW = plannedSlot.energyUsedWh() / slotHours;
-
-		// This Controller's own convention is charge-positive; OpenEMS's ESS
-		// convention is discharge-positive — flip the sign when commanding.
-		var essPowerW = (int) Math.round(-averagePowerW);
+		var essPowerW = this.essPowerW(plannedSlot.mode(), plannedSlot.energyUsedWh());
 		this.channel(ControllerEssBattery.ChannelId.PLANNED_POWER).setNextValue(essPowerW);
 
 		PowerConstraint.apply(this.ess, this.id(), SingleOrAllPhase.ALL, Pwr.ACTIVE, Relationship.EQUALS, essPowerW);
+	}
+
+	/**
+	 * The ESS power to command this cycle, discharge-positive. OFF: idle.
+	 * With a set-point: the slot's planned energy spread evenly over the slot
+	 * (the physics stops at the set-point, so this reaches the same
+	 * end-of-slot SoC). Otherwise the battery picks up the measured slack in
+	 * real time — the actual surplus or shortfall, not the planned one —
+	 * within the mode's C-rate and SoC band.
+	 *
+	 * @param mode            the planned mode
+	 * @param plannedEnergyWh the slot's planned energy, charge-positive
+	 * @return the ESS power in W
+	 * @throws OpenemsNamedException if the ESS capacity is not available
+	 */
+	private int essPowerW(BatteryMode mode, double plannedEnergyWh) throws OpenemsNamedException {
+		if (mode == BatteryMode.OFF) {
+			return 0;
+		}
+		// This Controller's own convention is charge-positive; OpenEMS's ESS
+		// convention is discharge-positive — flip the sign when commanding.
+		var slotHours = BatteryPhysics.SLOT_DURATION_SECONDS / 3600.0;
+		var plannedEssPowerW = (int) Math.round(-plannedEnergyWh / slotHours);
+
+		var essActivePower = this.ess.getActivePower().get();
+		var gridActivePower = this.sum.getGridActivePower().get();
+		var soc = this.ess.getSoc().get();
+		if (this.setpointSoc() != null || essActivePower == null || gridActivePower == null || soc == null) {
+			return plannedEssPowerW;
+		}
+		var physics = new BatteryPhysics(this.physicsConfig());
+		return BatteryPhysics.followResidualW(essActivePower, gridActivePower,
+				physics.maxChargeW(mode, soc / 100.0), physics.maxDischargeW(mode, soc / 100.0));
 	}
 
 	private int slotIndexFor(Instant now) {
@@ -189,9 +228,18 @@ public class ControllerEssBatteryImpl extends AbstractOpenemsComponent
 		return (int) Math.floorDiv(elapsedSeconds, (long) BatteryPhysics.SLOT_DURATION_SECONDS);
 	}
 
-	private PlanableResourceModel<BatteryMode> buildModel(List<SlotTarget> targets) throws OpenemsNamedException {
+	private PlanableResourceModel<BatteryMode> buildModel() throws OpenemsNamedException {
+		var setpointSoc = this.setpointSoc();
+		TargetSetpointResolver<BatteryMode> targetSetpointResolver = (mode, slot) -> resolveTarget(mode,
+				setpointSoc);
+
+		return new PlanableResourceModel<>(BatteryMode.values(), SOC_BUCKETS, new BatteryModeSwitchingMatrix(),
+				new BatteryPhysics(this.physicsConfig()), targetSetpointResolver);
+	}
+
+	private BatteryPhysicsConfig physicsConfig() throws OpenemsNamedException {
 		var capacityWh = (double) this.ess.getCapacity().getOrError();
-		var physicsConfig = new BatteryPhysicsConfig(//
+		return new BatteryPhysicsConfig(//
 				capacityWh, //
 				this.config.socMinNormal(), this.config.socMaxNormal(), //
 				this.config.socMinSafe(), this.config.socMaxSafe(), //
@@ -201,13 +249,6 @@ public class ControllerEssBatteryImpl extends AbstractOpenemsComponent
 				this.config.cRateForcedBoostCharge(), this.config.cRateForcedBoostDischarge(), //
 				this.config.chargeEfficiency(), this.config.dischargeEfficiency(), //
 				this.config.degradationCostEurPerKwh(), this.config.degradationCostBoostMultiplier());
-
-		var setpointSoc = this.setpointSoc();
-		TargetSetpointResolver<BatteryMode> targetSetpointResolver = (mode, slot) -> resolveTarget(mode,
-				targets.get(slot), setpointSoc);
-
-		return new PlanableResourceModel<>(BatteryMode.values(), SOC_BUCKETS, new BatteryModeSwitchingMatrix(),
-				new BatteryPhysics(physicsConfig), targetSetpointResolver);
 	}
 
 	/**
@@ -222,23 +263,20 @@ public class ControllerEssBatteryImpl extends AbstractOpenemsComponent
 	}
 
 	/**
-	 * Resolves the target a mode's physics seeks: nothing in OFF; otherwise
-	 * the external set-point if one is given (optional in every mode,
-	 * including ON), else the middle of the slot's SoC band. The physics
-	 * itself still caps movement at the mode's own band.
+	 * Resolves the set-point a mode's physics honours: the external set-point
+	 * if one is given (optional in every mode, including ON), never in OFF.
+	 * There is no default target: without a set-point the battery just picks
+	 * up the plan's slack, in the direction of its budget (see
+	 * {@link BatteryPhysics#apply}).
 	 *
 	 * @param mode        the candidate mode
-	 * @param target      the slot's deviation-cost target (the SoC band)
 	 * @param setpointSoc the external set-point as a fraction, or null
-	 * @return the target SoC fraction, or null for OFF
+	 * @return the set-point SoC fraction, or null
 	 */
-	static Double resolveTarget(BatteryMode mode, SlotTarget target, Double setpointSoc) {
+	static Double resolveTarget(BatteryMode mode, Double setpointSoc) {
 		if (mode == BatteryMode.OFF) {
 			return null;
 		}
-		if (setpointSoc != null) {
-			return setpointSoc;
-		}
-		return (target.min() + target.max()) / 2.0;
+		return setpointSoc;
 	}
 }

@@ -40,12 +40,21 @@ public class ReplayData {
 	 */
 	public record Slot(Double priceEurPerKwh, Integer pvForecastW, Integer pvActualW) {
 
-		/** The PV production to simulate: the actual, else the forecast, else 0. */
+		/**
+		 * The PV production to simulate: the actual, else the forecast, else 0.
+		 *
+		 * @return the production in W
+		 */
 		public int pvProducedW() {
 			return this.pvActualW != null ? this.pvActualW : this.pvForecastW != null ? this.pvForecastW : 0;
 		}
 
-		/** The PV forecast to give the planner: the forecast, else the actual, else 0. */
+		/**
+		 * The PV forecast to give the planner: the forecast, else the actual, else
+		 * 0.
+		 *
+		 * @return the forecast in W
+		 */
 		public int pvPredictedW() {
 			return this.pvForecastW != null ? this.pvForecastW : this.pvActualW != null ? this.pvActualW : 0;
 		}
@@ -56,6 +65,8 @@ public class ReplayData {
 	private final List<List<Slot>> days;
 
 	/**
+	 * Creates the replay.
+	 *
 	 * @param zone      the local time zone of the test days
 	 * @param startDate the real local date on which the first test day plays
 	 * @param days      the test days in play order, each a list of slots
@@ -134,7 +145,7 @@ public class ReplayData {
 	public Slot slotAt(Instant time) {
 		var date = time.atZone(this.zone).toLocalDate();
 		var day = this.dayFor(date);
-		var index = (int) Duration.between(midnight(date), time).dividedBy(SLOT);
+		var index = (int) Duration.between(this.midnight(date), time).dividedBy(SLOT);
 		return day.get(Math.min(index, day.size() - 1));
 	}
 
@@ -185,6 +196,11 @@ public class ReplayData {
 		return date.atStartOfDay(this.zone).toInstant();
 	}
 
+	/**
+	 * The local time zone of the test days.
+	 *
+	 * @return the zone
+	 */
 	public ZoneId zone() {
 		return this.zone;
 	}

@@ -37,6 +37,14 @@ import io.openems.edge.scheduling.api.PlanableController;
  * reduced only as far as the export capacity requires: export headroom is
  * the export capacity plus whatever consumers were granted, minus any other
  * supply, shared across producers in registration order.
+ *
+ * <p>
+ * Balancing: a resource that {@link PlanableController#balancesResidual()
+ * balances the residual} (a battery) takes no part in the above. It comes
+ * last, with the signed residual of all other plans and the base load as its
+ * budget — surplus to absorb, or shortfall to provide — and its own supply
+ * or consumption doesn't change the other resources' budgets. So it never
+ * charges from the grid: it only picks up slack.
  */
 final class DpArbitration {
 
@@ -69,14 +77,50 @@ final class DpArbitration {
 	static Map<String, double[]> run(List<PlanableController> resources, double[] priceEurPerKwh,
 			double[] availableCapacityW, double[] availableExportCapacityW, int maxRounds,
 			double convergenceThresholdFraction) throws OpenemsNamedException {
+		return runDetailed(resources, priceEurPerKwh, availableCapacityW, availableExportCapacityW,
+				new double[priceEurPerKwh.length], maxRounds, convergenceThresholdFraction).budget();
+	}
+
+	/**
+	 * The outcome of one arbitration.
+	 *
+	 * @param budget each resource's final per-slot budget, by Component-ID
+	 * @param plans  each resource's final plan (its last {@code createPlan}
+	 *               result, made with that budget), by Component-ID
+	 * @param rounds the number of arbitration rounds run
+	 */
+	record Result(Map<String, double[]> budget, Map<String, PlanSummary> plans, int rounds) {
+	}
+
+	/**
+	 * Same as {@link #run}, but also returns every resource's final plan, and
+	 * takes the base load the residual for balancing resources includes.
+	 *
+	 * @param resources                    see {@link #run}
+	 * @param priceEurPerKwh               see {@link #run}
+	 * @param availableCapacityW           see {@link #run}
+	 * @param availableExportCapacityW     see {@link #run}
+	 * @param baseLoadW                    one entry per slot: the flat base
+	 *                                         load, part of the residual a
+	 *                                         balancing resource picks up
+	 * @param maxRounds                    see {@link #run}
+	 * @param convergenceThresholdFraction see {@link #run}
+	 * @return the {@link Result}
+	 * @throws OpenemsNamedException see {@link #run}
+	 */
+	static Result runDetailed(List<PlanableController> resources, double[] priceEurPerKwh,
+			double[] availableCapacityW, double[] availableExportCapacityW, double[] baseLoadW, int maxRounds,
+			double convergenceThresholdFraction) throws OpenemsNamedException {
 		var slotCount = priceEurPerKwh.length;
 		var forecasts = productionForecasts(resources, slotCount);
-		var budget = initialBudget(resources, forecasts, availableCapacityW);
+		var budget = initialBudget(resources, forecasts, availableCapacityW, baseLoadW);
 
+		var rounds = 0;
 		for (var round = 0; round < maxRounds; round++) {
+			rounds++;
 			var requested = createPlans(resources, priceEurPerKwh, budget);
 			var nextBudget = arbitrate(resources, forecasts, requested, availableCapacityW,
-					availableExportCapacityW, slotCount);
+					availableExportCapacityW, baseLoadW, slotCount);
 			var converged = hasConverged(budget, nextBudget, convergenceThresholdFraction);
 			budget = nextBudget;
 			if (converged) {
@@ -88,9 +132,9 @@ final class DpArbitration {
 		// budget this method is about to return, even when convergence (or
 		// the round cap) was reached on the last round's own arbitration
 		// output rather than its createPlan input.
-		createPlans(resources, priceEurPerKwh, budget);
+		var plans = createPlans(resources, priceEurPerKwh, budget);
 
-		return budget;
+		return new Result(budget, plans, rounds);
 	}
 
 	private static Map<String, double[]> productionForecasts(List<PlanableController> resources, int slotCount) {
@@ -108,7 +152,7 @@ final class DpArbitration {
 	}
 
 	private static Map<String, double[]> initialBudget(List<PlanableController> resources,
-			Map<String, double[]> forecasts, double[] availableCapacityW) {
+			Map<String, double[]> forecasts, double[] availableCapacityW, double[] baseLoadW) {
 		// Round 0 is optimistic for consumers: import capacity plus all
 		// forecast production, so a consumer can ask for PV-backed power at
 		// all — its later requests are clipped to whatever it was offered.
@@ -118,10 +162,23 @@ final class DpArbitration {
 				consumerCeilingW[i] += Math.max(0, forecast[i]);
 			}
 		}
+		// A balancing resource starts from the residual of forecast production
+		// and base load alone; consumers' plans are added from round 1 on.
+		var residualW = new double[availableCapacityW.length];
+		for (var i = 0; i < residualW.length; i++) {
+			residualW[i] = -baseLoadW[i];
+			for (var forecast : forecasts.values()) {
+				residualW[i] += Math.max(0, forecast[i]);
+			}
+		}
 		var budget = new LinkedHashMap<String, double[]>();
 		for (var resource : resources) {
 			var forecast = forecasts.get(resource.id());
-			budget.put(resource.id(), forecast == null ? consumerCeilingW.clone() : negated(forecast));
+			if (resource.balancesResidual()) {
+				budget.put(resource.id(), residualW.clone());
+			} else {
+				budget.put(resource.id(), forecast == null ? consumerCeilingW.clone() : negated(forecast));
+			}
 		}
 		return budget;
 	}
@@ -154,11 +211,16 @@ final class DpArbitration {
 
 	private static Map<String, double[]> arbitrate(List<PlanableController> resources,
 			Map<String, double[]> forecasts, Map<String, PlanSummary> requested, double[] availableCapacityW,
-			double[] availableExportCapacityW, int slotCount) {
+			double[] availableExportCapacityW, double[] baseLoadW, int slotCount) {
+		var balancing = resources.stream() //
+				.filter(PlanableController::balancesResidual) //
+				.toList();
 		var producers = resources.stream() //
+				.filter(resource -> !resource.balancesResidual()) //
 				.filter(resource -> forecasts.containsKey(resource.id())) //
 				.toList();
 		var others = resources.stream() //
+				.filter(resource -> !resource.balancesResidual()) //
 				.filter(resource -> !forecasts.containsKey(resource.id())) //
 				.toList();
 		var tier1 = others.stream() //
@@ -203,6 +265,21 @@ final class DpArbitration {
 				var grant = Math.min(Math.max(0, forecasts.get(resource.id())[slot]), Math.max(0, exportHeadroomW));
 				nextBudget.get(resource.id())[slot] = -grant;
 				exportHeadroomW -= grant;
+			}
+
+			// Balancing resources, last: the signed residual of everyone
+			// else's plan and the base load — positive surplus to absorb,
+			// negative shortfall to provide — shared in registration order.
+			var residualW = -baseLoadW[slot];
+			for (var resource : producers) {
+				residualW -= requested.get(resource.id()).powerPerSlotW()[slot];
+			}
+			for (var resource : others) {
+				residualW -= requested.get(resource.id()).powerPerSlotW()[slot];
+			}
+			for (var resource : balancing) {
+				nextBudget.get(resource.id())[slot] = residualW;
+				residualW -= requested.get(resource.id()).powerPerSlotW()[slot];
 			}
 		}
 		return nextBudget;

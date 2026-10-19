@@ -6,6 +6,7 @@ import static org.osgi.service.component.annotations.ReferencePolicy.DYNAMIC;
 import static org.osgi.service.component.annotations.ReferencePolicyOption.GREEDY;
 
 import java.time.Instant;
+import java.time.ZoneId;
 import java.util.Arrays;
 import java.util.List;
 
@@ -16,6 +17,8 @@ import org.osgi.service.component.annotations.ConfigurationPolicy;
 import org.osgi.service.component.annotations.Deactivate;
 import org.osgi.service.component.annotations.Reference;
 import org.osgi.service.metatype.annotations.Designate;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import io.openems.common.exceptions.OpenemsError.OpenemsNamedException;
 import io.openems.edge.common.component.AbstractOpenemsComponent;
@@ -36,7 +39,9 @@ import io.openems.edge.timeofusetariff.api.TimeOfUseTariff;
  * a flat {@code gridExportCapacityW + baseLoadW} (the base load absorbs
  * production too). Local production is not part of either: a producing
  * resource (PV) reports its own forecast and {@link DpArbitration} adds its
- * production to the consumers' capacity per slot. Tier-2 ordering is plain
+ * production to the consumers' capacity per slot. A balancing resource
+ * (battery) gets the residual of the other plans and the flat base load.
+ * Tier-2 ordering is plain
  * registration order, not the marginal-cost refinement logged as a post-MVP
  * item.
  */
@@ -50,6 +55,8 @@ public class ControllerSchedulingDpImpl extends AbstractOpenemsComponent impleme
 
 	private static final long SLOT_DURATION_SECONDS = 900;
 	private static final double MWH_PER_KWH = 1000.0;
+
+	private final Logger log = LoggerFactory.getLogger(ControllerSchedulingDpImpl.class);
 
 	@Reference(policy = DYNAMIC, policyOption = GREEDY, cardinality = MULTIPLE)
 	private volatile List<PlanableController> planableControllers;
@@ -109,8 +116,16 @@ public class ControllerSchedulingDpImpl extends AbstractOpenemsComponent impleme
 		var availableCapacityW = this.availableCapacity(priceEurPerKwh.length);
 		var availableExportCapacityW = this.availableExportCapacity(priceEurPerKwh.length);
 
-		DpArbitration.run(resources, priceEurPerKwh, availableCapacityW, availableExportCapacityW,
-				this.config.maxRounds(), this.config.convergenceThresholdFraction());
+		var baseLoadW = new double[priceEurPerKwh.length];
+		Arrays.fill(baseLoadW, this.config.baseLoadW());
+
+		var result = DpArbitration.runDetailed(resources, priceEurPerKwh, availableCapacityW,
+				availableExportCapacityW, baseLoadW, this.config.maxRounds(),
+				this.config.convergenceThresholdFraction());
+		if (this.config.logPlan()) {
+			this.logInfo(this.log, PlanTable.format(currentSlotStart(now), ZoneId.systemDefault(), priceEurPerKwh,
+					this.config.baseLoadW(), result));
+		}
 
 		for (var resource : resources) {
 			resource.executePlan(now);

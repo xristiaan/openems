@@ -31,16 +31,35 @@ public final class BatteryPhysics implements StateTransitionFunction<BatteryMode
 		this.config = config;
 	}
 
+	/**
+	 * One slot of the battery picking up the plan's slack.
+	 *
+	 * <p>
+	 * The budget's sign sets the direction: a positive budget is surplus to
+	 * absorb (charge), a negative one shortfall to provide (discharge), its
+	 * magnitude the most power to use. Without a set-point the battery
+	 * follows that for the whole slot, at the mode's C-rate and within the
+	 * mode's SoC band. A set-point is honoured only in the budget's
+	 * direction: the battery stops on reaching it, and stays idle if it lies
+	 * the other way. FORCED/FORCED_BOOST without a set-point behave like
+	 * ON/BOOST, so the planner only picks them when a set-point makes them
+	 * differ.
+	 */
 	@Override
 	public StateTransitionResult apply(double currentSoc, BatteryMode mode, int slot, double availablePowerW,
 			Double targetSoc) {
-		if (targetSoc == null) {
-			// No target to seek this slot: idle, regardless of mode.
+		if (availablePowerW == 0) {
 			return new StateTransitionResult(0, currentSoc);
 		}
+		var charging = availablePowerW > 0;
+		if (targetSoc != null && (charging ? targetSoc <= currentSoc : targetSoc >= currentSoc)) {
+			// Already at the set-point, or it lies against the budget's
+			// direction: nothing to do.
+			return new StateTransitionResult(0, currentSoc);
+		}
+		var effectiveMode = targetSoc == null ? withoutSetpoint(mode) : mode;
 
-		var charging = targetSoc >= currentSoc;
-		var cRate = this.cRate(mode, charging);
+		var cRate = this.cRate(effectiveMode, charging);
 		if (cRate == 0) {
 			// OFF, or any mode with zero rate in this direction: nothing moves.
 			return new StateTransitionResult(0, currentSoc);
@@ -48,11 +67,10 @@ public final class BatteryPhysics implements StateTransitionFunction<BatteryMode
 
 		var chargeDirection = charging ? 1 : -1;
 		var capacityWh = this.config.nominalCapacityWh();
-		var pW = Math.min(availablePowerW, capacityWh * cRate);
+		var pW = Math.min(Math.abs(availablePowerW), capacityWh * cRate);
 		var efficiency = charging ? this.config.chargeEfficiency() : 1 / this.config.dischargeEfficiency();
 
 		var eCurrentWh = currentSoc * capacityWh;
-		var eTargetWh = targetSoc * capacityWh;
 
 		// Cap how far this mode is allowed to move state at all — its own
 		// SoC band, the same physical-limit role as the boiler's T_Max/T_min.
@@ -60,11 +78,12 @@ public final class BatteryPhysics implements StateTransitionFunction<BatteryMode
 		// the direction of travel (e.g. drifted to 85% while in ON, whose
 		// NORMAL band caps at 80%), there must be zero room left, not some
 		// positive distance back from the wrong side of the edge.
-		var band = this.socBand(mode);
+		var band = this.socBand(effectiveMode);
 		var bandEdgeWh = (charging ? band.max() : band.min()) * capacityWh;
 		var remainingBandRoomWh = Math.max(0, charging ? bandEdgeWh - eCurrentWh : eCurrentWh - bandEdgeWh);
 
-		var tTargetSeconds = Math.abs(eTargetWh - eCurrentWh) / pW / efficiency * 3600.0;
+		var tTargetSeconds = targetSoc == null ? SLOT_DURATION_SECONDS
+				: Math.abs(targetSoc * capacityWh - eCurrentWh) / pW / efficiency * 3600.0;
 		var tBandLimitSeconds = remainingBandRoomWh / pW / efficiency * 3600.0;
 		var tSeconds = Math.min(Math.min(tTargetSeconds, tBandLimitSeconds), SLOT_DURATION_SECONDS);
 		var tHours = tSeconds / 3600.0;
@@ -78,6 +97,66 @@ public final class BatteryPhysics implements StateTransitionFunction<BatteryMode
 		var deviceCostEur = Math.abs(eChangeWh) / 1000.0 * degradationRate;
 
 		return new StateTransitionResult(eConsumedWh, newSoc, deviceCostEur);
+	}
+
+	/**
+	 * The most power the mode may charge with right now, in W: its C-rate,
+	 * or 0 once the SoC has reached the top of its band. For real-time
+	 * execution.
+	 *
+	 * @param mode the mode (FORCED/FORCED_BOOST as without a set-point)
+	 * @param soc  the current SoC as a fraction
+	 * @return the limit in W, positive
+	 */
+	public double maxChargeW(BatteryMode mode, double soc) {
+		var effectiveMode = withoutSetpoint(mode);
+		if (soc >= this.socBand(effectiveMode).max()) {
+			return 0;
+		}
+		return this.config.nominalCapacityWh() * this.cRate(effectiveMode, true);
+	}
+
+	/**
+	 * The most power the mode may discharge with right now, in W: its C-rate,
+	 * or 0 once the SoC has reached the bottom of its band. For real-time
+	 * execution.
+	 *
+	 * @param mode the mode (FORCED/FORCED_BOOST as without a set-point)
+	 * @param soc  the current SoC as a fraction
+	 * @return the limit in W, positive
+	 */
+	public double maxDischargeW(BatteryMode mode, double soc) {
+		var effectiveMode = withoutSetpoint(mode);
+		if (soc <= this.socBand(effectiveMode).min()) {
+			return 0;
+		}
+		return this.config.nominalCapacityWh() * this.cRate(effectiveMode, false);
+	}
+
+	/**
+	 * Real-time slack following: the ESS power that brings the grid power to
+	 * zero, the way OpenEMS's own balancing does, within the given limits.
+	 * OpenEMS conventions: ESS power discharge-positive, grid power
+	 * import-positive.
+	 *
+	 * @param essActivePowerW  the ESS's current power
+	 * @param gridActivePowerW the current grid power
+	 * @param maxChargeW       the charge limit, positive
+	 * @param maxDischargeW    the discharge limit, positive
+	 * @return the ESS power to command, discharge-positive
+	 */
+	public static int followResidualW(int essActivePowerW, int gridActivePowerW, double maxChargeW,
+			double maxDischargeW) {
+		var targetW = (double) essActivePowerW + gridActivePowerW;
+		return (int) Math.round(Math.max(-maxChargeW, Math.min(maxDischargeW, targetW)));
+	}
+
+	private static BatteryMode withoutSetpoint(BatteryMode mode) {
+		return switch (mode) {
+		case FORCED -> BatteryMode.ON;
+		case FORCED_BOOST -> BatteryMode.BOOST;
+		default -> mode;
+		};
 	}
 
 	private double cRate(BatteryMode mode, boolean charging) {

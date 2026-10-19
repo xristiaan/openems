@@ -40,6 +40,9 @@ import org.osgi.service.metatype.annotations.ObjectClassDefinition;
 	@AttributeDefinition(name = "Convergence threshold", description = "y: stop iterating once no resource's allocated budget changes by more than this fraction (e.g. 0.05 = 5%) between rounds.")
 	double convergenceThresholdFraction() default 0.05;
 
+	@AttributeDefinition(name = "Log plan", description = "Log the whole plan after every re-plan: per slot the price, each resource's mode, power and state, and the resulting grid power. For testing; verbose.")
+	boolean logPlan() default false;
+
 	String webconsole_configurationFactory_nameHint() default "Controller Scheduling Dp [{id}]";
 
 }

@@ -70,8 +70,7 @@ public interface PlanableController extends OpenemsComponent {
 	 * to consuming resources in the same slot.
 	 *
 	 * <p>
-	 * Consuming and bidirectional resources (a battery) report empty and keep
-	 * the ordinary consumption-positive budget.
+	 * Consuming and balancing resources (a battery) report empty.
 	 *
 	 * @param slotCount the number of slots being planned
 	 * @return the forecast, one entry per slot, or empty if this resource is
@@ -79,5 +78,20 @@ public interface PlanableController extends OpenemsComponent {
 	 */
 	default Optional<double[]> productionForecastW(int slotCount) {
 		return Optional.empty();
+	}
+
+	/**
+	 * Whether this resource balances the plan: it picks up the slack other
+	 * resources leave. A balancing resource (a battery) is arbitrated last,
+	 * and its budget each slot is the signed residual of everyone else's plan
+	 * plus the base load: positive is surplus it may absorb (charge),
+	 * negative is shortfall it may provide (discharge). The sign sets the
+	 * direction; its own planning only decides whether and how (its mode) to
+	 * follow it.
+	 *
+	 * @return true for a balancing resource
+	 */
+	default boolean balancesResidual() {
+		return false;
 	}
 }
