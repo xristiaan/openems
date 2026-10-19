@@ -21,6 +21,7 @@ import org.osgi.service.component.annotations.Reference;
 import org.osgi.service.metatype.annotations.Designate;
 
 import io.openems.common.exceptions.OpenemsError.OpenemsNamedException;
+import io.openems.common.referencetarget.GenerateTargetsFromReferences;
 import io.openems.common.types.ChannelAddress;
 import io.openems.edge.common.channel.IntegerReadChannel;
 import io.openems.edge.common.channel.IntegerWriteChannel;
@@ -55,6 +56,7 @@ import io.openems.edge.scheduling.api.PlanableController;
  * Channel (Communication Mode "OpenEMS native").
  */
 @Designate(ocd = Config.class, factory = true)
+@GenerateTargetsFromReferences("pvInverter")
 @Component(//
 		name = "Controller.Pv", //
 		immediate = true, //

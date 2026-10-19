@@ -19,6 +19,7 @@ import org.osgi.service.component.annotations.Reference;
 import org.osgi.service.metatype.annotations.Designate;
 
 import io.openems.common.exceptions.OpenemsError.OpenemsNamedException;
+import io.openems.common.referencetarget.GenerateTargetsFromReferences;
 import io.openems.edge.common.channel.IntegerReadChannel;
 import io.openems.edge.common.component.AbstractOpenemsComponent;
 import io.openems.edge.common.component.OpenemsComponent;
@@ -50,6 +51,7 @@ import io.openems.edge.scheduling.api.PlanableController;
  * all, per the project's "keep every algorithm OpenEMS-free" principle.
  */
 @Designate(ocd = Config.class, factory = true)
+@GenerateTargetsFromReferences("ess")
 @Component(//
 		name = "Controller.Ess.Battery", //
 		immediate = true, //

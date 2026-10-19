@@ -42,7 +42,7 @@ public class MyConfig extends AbstractComponentConfig implements Config {
 	}
 
 	@Override
-	public String Mqtt_target() {
+	public String mqtt_target() {
 		return "(enabled=true)";
 	}
 

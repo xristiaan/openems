@@ -15,6 +15,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import io.openems.common.exceptions.OpenemsError.OpenemsNamedException;
+import io.openems.common.referencetarget.GenerateTargetsFromReferences;
 import io.openems.common.types.ChannelAddress;
 import io.openems.edge.bridge.mqtt.api.BridgeMqtt;
 import io.openems.edge.bridge.mqtt.api.BridgeMqtt.MqttSubscription;
@@ -36,6 +37,7 @@ import io.openems.edge.common.component.OpenemsComponent;
  * needs no {@code run()} at all.
  */
 @Designate(ocd = Config.class, factory = true)
+@GenerateTargetsFromReferences("mqtt")
 @Component(//
 		name = "Bridge.Mqtt.Writeback", //
 		immediate = true, //
