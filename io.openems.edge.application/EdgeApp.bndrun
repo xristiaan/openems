@@ -82,6 +82,7 @@
 	bnd.identity;id='io.openems.edge.controller.ess.activepowervoltagecharacteristic',\
 	bnd.identity;id='io.openems.edge.controller.ess.balancing',\
 	bnd.identity;id='io.openems.edge.controller.ess.battery',\
+	bnd.identity;id='io.openems.edge.controller.pv',\
 	bnd.identity;id='io.openems.edge.controller.ess.cycle',\
 	bnd.identity;id='io.openems.edge.controller.ess.delaycharge',\
 	bnd.identity;id='io.openems.edge.controller.ess.delayedselltogrid',\
@@ -534,6 +535,7 @@
 	stax2-api;version='[4.3.0,4.3.1)',\
 	io.openems.edge.meter.acrel;version=snapshot,\
 	io.openems.edge.controller.ess.battery;version=snapshot,\
+	io.openems.edge.controller.pv;version=snapshot,\
 	io.openems.edge.scheduling.algorithm;version=snapshot,\
 	io.openems.edge.controller.scheduling.dp;version=snapshot,\
 	io.openems.edge.scheduling.api;version=snapshot,\
