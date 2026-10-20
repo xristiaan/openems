@@ -17,11 +17,28 @@ package io.openems.edge.scheduling.algorithm;
  * @param stateTransitionFunction the device's physics
  * @param targetSetpointResolver  which target each mode's physics seeks,
  *                                    per slot
+ * @param terminalValue           what the state is still worth at the end of
+ *                                    the horizon
  */
 public record PlanableResourceModel<M extends Enum<M>>(//
 		M[] modes, //
 		StateBuckets buckets, //
 		ModeSwitchingMatrix<M> switchingMatrix, //
 		StateTransitionFunction<M> stateTransitionFunction, //
-		TargetSetpointResolver<M> targetSetpointResolver) {
+		TargetSetpointResolver<M> targetSetpointResolver, //
+		TerminalValue terminalValue) {
+
+	/**
+	 * A model whose state is worth nothing after the last slot.
+	 *
+	 * @param modes                   see the record
+	 * @param buckets                 see the record
+	 * @param switchingMatrix         see the record
+	 * @param stateTransitionFunction see the record
+	 * @param targetSetpointResolver  see the record
+	 */
+	public PlanableResourceModel(M[] modes, StateBuckets buckets, ModeSwitchingMatrix<M> switchingMatrix,
+			StateTransitionFunction<M> stateTransitionFunction, TargetSetpointResolver<M> targetSetpointResolver) {
+		this(modes, buckets, switchingMatrix, stateTransitionFunction, targetSetpointResolver, TerminalValue.NONE);
+	}
 }

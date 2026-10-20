@@ -37,6 +37,10 @@ class PlanTableBuilderTest {
 	}
 
 	private static PlanableResourceModel<TestMode> model() {
+		return model(TerminalValue.NONE);
+	}
+
+	private static PlanableResourceModel<TestMode> model(TerminalValue terminalValue) {
 		ModeSwitchingMatrix<TestMode> freelySwitchable = new ModeSwitchingMatrix<>() {
 			@Override
 			public ModeTransition transition(TestMode priorMode, TestMode currentMode) {
@@ -49,7 +53,34 @@ class PlanTableBuilderTest {
 			}
 		};
 		return new PlanableResourceModel<>(TestMode.values(), new StateBuckets(0, 100, 20), freelySwitchable,
-				chargerPhysics(), (mode, slot) -> null);
+				chargerPhysics(), (mode, slot) -> null, terminalValue);
+	}
+
+	@Test
+	void withoutATerminalValueNothingIsStoredForAfterTheHorizon() {
+		var slots = List.of(new TimeSlot(1, 2000), new TimeSlot(2, 2000));
+		var targets = List.of(SlotTarget.unconstrained(), SlotTarget.unconstrained());
+
+		var table = PlanTableBuilder.build(model(), slots, targets);
+		var plan = ExecutionPlanCalculator.walk(table, slots, targets, 0, TestMode.OFF, 0);
+
+		assertEquals(0, plan.slots().get(1).endState(), 1e-9);
+	}
+
+	@Test
+	void aTerminalValueAboveThePriceStoresInTheCheapSlotOnly() {
+		// 250 Wh per ON slot = 20 % state: worth 1.5 EUR/kWh after the horizon,
+		// so charging pays at 1 EUR/kWh but not at 2.
+		var slots = List.of(new TimeSlot(1, 2000), new TimeSlot(2, 2000));
+		var targets = List.of(SlotTarget.unconstrained(), SlotTarget.unconstrained());
+		TerminalValue worth = endState -> endState / PERCENT_PER_FULL_POWER_SLOT * 0.25 * 1.5;
+
+		var table = PlanTableBuilder.build(model(worth), slots, targets);
+		var plan = ExecutionPlanCalculator.walk(table, slots, targets, 0, TestMode.OFF, 0);
+
+		var modes = plan.slots().stream().map(PlannedSlot::mode).toList();
+		assertEquals(List.of(TestMode.ON, TestMode.OFF), modes);
+		assertEquals(20, plan.slots().get(1).endState(), 1e-9);
 	}
 
 	@Test

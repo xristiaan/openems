@@ -11,10 +11,11 @@ import java.util.List;
  * of slot n+1."
  *
  * <p>
- * No special terminal-cost function at the last slot: scoring every slot's
- * deviation on avg(startState, endState) — including the last — already
- * removes the end-of-horizon bias a begin-state-only convention would have,
- * so the last slot's cost-to-go is simply 0 (there is no slot N).
+ * Scoring every slot's deviation on avg(startState, endState) — including
+ * the last — already removes the end-of-horizon bias a begin-state-only
+ * convention would have. After the last slot, the cost-to-go is minus the
+ * model's {@link TerminalValue} of the end state: what is left is still
+ * worth something (energy in a battery), or nothing by default.
  */
 public final class PlanTableBuilder<M extends Enum<M>> {
 
@@ -105,7 +106,9 @@ public final class PlanTableBuilder<M extends Enum<M>> {
 
 		var newLock = ModeLock.next(model.switchingMatrix(), priorMode, lock, candidate);
 		var nextBucket = model.buckets().indexOf(result.nextState());
-		var costToGo = slot == slotCount - 1 ? 0 : table.get(slot + 1, nextBucket, candidate, newLock).costToGo();
+		var costToGo = slot == slotCount - 1 //
+				? -model.terminalValue().valueEur(result.nextState())
+				: table.get(slot + 1, nextBucket, candidate, newLock).costToGo();
 
 		return slotCost + costToGo;
 	}

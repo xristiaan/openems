@@ -37,6 +37,7 @@ import io.openems.edge.scheduling.algorithm.PlanableResourceModel;
 import io.openems.edge.scheduling.algorithm.SlotTarget;
 import io.openems.edge.scheduling.algorithm.StateBuckets;
 import io.openems.edge.scheduling.algorithm.TargetSetpointResolver;
+import io.openems.edge.scheduling.algorithm.TerminalValue;
 import io.openems.edge.scheduling.algorithm.TimeSlot;
 import io.openems.edge.scheduling.api.PlanSummary;
 import io.openems.edge.scheduling.api.PlanableController;
@@ -115,7 +116,7 @@ public class ControllerEssBatteryImpl extends AbstractOpenemsComponent
 				this.config.deviationCostEurPerKwh());
 		var targets = java.util.Collections.nCopies(slots.size(), target);
 
-		var model = this.buildModel();
+		var model = this.buildModel(slots);
 		var table = PlanTableBuilder.build(model, slots, targets);
 		var currentSoc = this.ess.getSoc().getOrError() / 100.0;
 		var plan = ExecutionPlanCalculator.walk(table, slots, targets, currentSoc, this.priorMode,
@@ -228,13 +229,40 @@ public class ControllerEssBatteryImpl extends AbstractOpenemsComponent
 		return (int) Math.floorDiv(elapsedSeconds, (long) BatteryPhysics.SLOT_DURATION_SECONDS);
 	}
 
-	private PlanableResourceModel<BatteryMode> buildModel() throws OpenemsNamedException {
+	private PlanableResourceModel<BatteryMode> buildModel(List<TimeSlot> slots) throws OpenemsNamedException {
 		var setpointSoc = this.setpointSoc();
 		TargetSetpointResolver<BatteryMode> targetSetpointResolver = (mode, slot) -> resolveTarget(mode,
 				setpointSoc);
 
+		var physicsConfig = this.physicsConfig();
+		var valueEurPerKwh = storedEnergyValueEurPerKwh(slots, this.config.endOfHorizonValueFactor(),
+				physicsConfig.dischargeEfficiency(), physicsConfig.degradationCostEurPerKwh());
+		var capacityKwh = physicsConfig.nominalCapacityWh() / 1000.0;
+		TerminalValue terminalValue = endSoc -> endSoc * capacityKwh * valueEurPerKwh;
+
 		return new PlanableResourceModel<>(BatteryMode.values(), SOC_BUCKETS, new BatteryModeSwitchingMatrix(),
-				new BatteryPhysics(this.physicsConfig()), targetSetpointResolver);
+				new BatteryPhysics(physicsConfig), targetSetpointResolver, terminalValue);
+	}
+
+	/**
+	 * What a kWh still stored at the end of the plan is worth: it will save
+	 * buying energy later, at a price estimated as the plan's average buy
+	 * price times {@code factor}, less what discharging it loses and wears.
+	 *
+	 * @param slots                    the plan's slots
+	 * @param factor                   the end-of-horizon value factor; 0
+	 *                                     makes stored energy worthless
+	 * @param dischargeEfficiency      the discharge efficiency (0-1)
+	 * @param degradationCostEurPerKwh the degradation cost per kWh moved
+	 * @return the value in Euro per stored kWh, at least 0
+	 */
+	static double storedEnergyValueEurPerKwh(List<TimeSlot> slots, double factor, double dischargeEfficiency,
+			double degradationCostEurPerKwh) {
+		if (slots.isEmpty() || factor <= 0) {
+			return 0;
+		}
+		var averageBuy = slots.stream().mapToDouble(TimeSlot::buyPriceEurPerKwh).average().getAsDouble();
+		return Math.max(0, factor * averageBuy * dischargeEfficiency - degradationCostEurPerKwh);
 	}
 
 	private BatteryPhysicsConfig physicsConfig() throws OpenemsNamedException {
