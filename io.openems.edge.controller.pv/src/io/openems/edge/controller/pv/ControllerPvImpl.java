@@ -155,7 +155,8 @@ public class ControllerPvImpl extends AbstractOpenemsComponent
 		var targets = Collections.nCopies(slots.size(), SlotTarget.unconstrained());
 
 		var setpointW = this.setpointW();
-		TargetSetpointResolver<PvMode> resolver = (mode, slot) -> resolveTarget(mode, setpointW);
+		TargetSetpointResolver<PvMode> resolver = (mode, slot) -> resolveTarget(mode, setpointW,
+				slots.get(slot).restOfSiteW());
 		var model = new PlanableResourceModel<>(MODES_IN_PREFERENCE_ORDER, STATELESS, new PvModeSwitchingMatrix(),
 				physics, resolver);
 
@@ -271,15 +272,24 @@ public class ControllerPvImpl extends AbstractOpenemsComponent
 
 	/**
 	 * Resolves the set-point a mode's physics uses: nothing in OFF; otherwise
-	 * the optional external set-point (honoured in ON/BOOST, required by
-	 * FORCED — which, without one, behaves like ON).
+	 * the optional external set-point, honoured in ON/BOOST. FORCED without
+	 * one follows the site: produce only what the rest of the site consumes,
+	 * so nothing is exported (the physics still keeps at least P_min).
 	 *
-	 * @param mode      the candidate mode
-	 * @param setpointW the external set-point, or null
-	 * @return the set-point, or null
+	 * @param mode        the candidate mode
+	 * @param setpointW   the external set-point, or null
+	 * @param restOfSiteW the rest of the site's grid power in the slot,
+	 *                        import-positive
+	 * @return the set-point (production negative), or null
 	 */
-	static Double resolveTarget(PvMode mode, Double setpointW) {
-		return mode == PvMode.OFF ? null : setpointW;
+	static Double resolveTarget(PvMode mode, Double setpointW, double restOfSiteW) {
+		if (mode == PvMode.OFF) {
+			return null;
+		}
+		if (mode == PvMode.FORCED && setpointW == null) {
+			return -Math.max(0, restOfSiteW);
+		}
+		return setpointW;
 	}
 
 	private Double setpointW() {

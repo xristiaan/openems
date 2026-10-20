@@ -42,8 +42,9 @@ public interface ControllerPv extends Controller, OpenemsComponent {
 		/**
 		 * Optional externally supplied target output, {@code P_target}, in W —
 		 * production negative (only the magnitude is used), e.g. written via
-		 * the MQTT write-back bridge. Honoured in ON/BOOST, required by
-		 * FORCED. Empty means no set-point.
+		 * the MQTT write-back bridge. Honoured in ON, BOOST and FORCED;
+		 * without one, FORCED follows the site's consumption (no export).
+		 * Empty means no set-point.
 		 */
 		SETPOINT_POWER(Doc.of(INTEGER)//
 				.unit(Unit.WATT)),

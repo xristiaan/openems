@@ -76,7 +76,8 @@ public final class PvPhysics implements StateTransitionFunction<PvMode> {
 		if (mode == PvMode.OFF) {
 			return this.config.pMinW();
 		}
-		// ON, BOOST: optional set-point; FORCED: required, falls back to ON.
+		// ON, BOOST: optional set-point. FORCED always gets one — the external
+		// one, or else the site's consumption (see ControllerPvImpl).
 		return targetSetpointW != null ? Math.abs(targetSetpointW) : this.config.pMaxW();
 	}
 

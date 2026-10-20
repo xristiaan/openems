@@ -49,10 +49,9 @@ import io.openems.edge.timeofusetariff.api.TimeOfUsePrices;
  * <p>
  * Prices come from the {@link TariffManager}: the grid-buy and grid-sell
  * day-ahead prices. Sell prices fall back to the buy price per slot where none
- * is known. Both are logged with the plan, but resources are still costed at
- * the buy price only: which of the two a resource's energy is worth depends on
- * whether the site imports or exports in that slot, which is part of the
- * arbitration strategy still to be decided.
+ * is known. Each resource costs its energy by the change it makes to the
+ * site's grid bill at those prices, given the rest of the site's latest plans
+ * (see {@link DpArbitration}).
  */
 @Designate(ocd = Config.class, factory = true)
 @Component(//
@@ -135,7 +134,7 @@ public class ControllerSchedulingDpImpl extends AbstractOpenemsComponent impleme
 		var baseLoadW = new double[priceEurPerKwh.length];
 		Arrays.fill(baseLoadW, this.config.baseLoadW());
 
-		var result = DpArbitration.runDetailed(resources, priceEurPerKwh, availableCapacityW,
+		var result = DpArbitration.runDetailed(resources, priceEurPerKwh, sellPriceEurPerKwh, availableCapacityW,
 				availableExportCapacityW, baseLoadW, this.config.maxRounds(),
 				this.config.convergenceThresholdFraction());
 		if (this.config.logPlan()) {

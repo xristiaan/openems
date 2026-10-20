@@ -27,14 +27,14 @@ final class SlotCost {
 	 * @param stateValue  the state at the start of the slot
 	 * @param result      the State-Transition Function's result for
 	 *                        {@code candidate}
-	 * @return the slot's cost: energy price × energy used, plus deviation
+	 * @return the slot's cost: the energy's cost ({@link TimeSlot#energyCostEur}), plus deviation
 	 *             cost, plus switching cost, plus {@code deviceCostEur}
 	 */
 	static <M> double of(TimeSlot timeSlot, SlotTarget target, ModeSwitchingMatrix<M> matrix, M priorMode,
 			M candidate, double stateValue, StateTransitionResult result) {
 		var meanState = (stateValue + result.nextState()) / 2.0;
 		var deviationCost = target.costOf(meanState);
-		var energyCostEur = result.energyUsedWh() / 1000.0 * timeSlot.energyPriceEurPerKwh();
+		var energyCostEur = timeSlot.energyCostEur(result.energyUsedWh());
 		var switchingCost = matrix.transition(priorMode, candidate).cost();
 		return energyCostEur + deviationCost + switchingCost + result.deviceCostEur();
 	}

@@ -45,8 +45,32 @@ import io.openems.edge.scheduling.api.PlanableController;
  * budget — surplus to absorb, or shortfall to provide — and its own supply
  * or consumption doesn't change the other resources' budgets. So it never
  * charges from the grid: it only picks up slack.
+ *
+ * <p>
+ * Prices: besides its budget, each resource gets the buy and sell price and
+ * the grid power of the rest of the site per slot — the base load plus every
+ * other resource's latest plan. It costs its own energy as the change it
+ * makes to the site's grid bill ({@code TimeSlot#energyCostEur}), so e.g.
+ * consuming from a PV surplus costs only the sell price, and PV covering the
+ * site's own consumption saves the buy price.
+ *
+ * <p>
+ * Within a round, balancing resources plan first, against the others' plans
+ * of the previous round (Round 0: producers at their forecast, everyone else
+ * idle); the others then plan against the balancing resources' plans of
+ * <em>this</em> round. So PV sees what the battery will absorb before it
+ * decides to curtail, instead of the two reacting to each other's previous
+ * plan and flipping every round. The loop stops once neither the budgets nor
+ * the rest of the site's grid power change any more.
  */
 final class DpArbitration {
+
+	/**
+	 * Below this many watts, a change in the rest of the site's grid power
+	 * doesn't count against convergence: around 0 W, relative changes are
+	 * meaningless.
+	 */
+	private static final double REST_OF_SITE_FLOOR_W = 10;
 
 	private DpArbitration() {
 	}
@@ -93,16 +117,16 @@ final class DpArbitration {
 	}
 
 	/**
-	 * Same as {@link #run}, but also returns every resource's final plan, and
-	 * takes the base load the residual for balancing resources includes.
+	 * Same as {@link #runDetailed(List, double[], double[], double[], double[],
+	 * double[], int, double)} with one price for buying and selling.
 	 *
 	 * @param resources                    see {@link #run}
 	 * @param priceEurPerKwh               see {@link #run}
 	 * @param availableCapacityW           see {@link #run}
 	 * @param availableExportCapacityW     see {@link #run}
-	 * @param baseLoadW                    one entry per slot: the flat base
-	 *                                         load, part of the residual a
-	 *                                         balancing resource picks up
+	 * @param baseLoadW                    see {@link #runDetailed(List, double[],
+	 *                                         double[], double[], double[],
+	 *                                         double[], int, double)}
 	 * @param maxRounds                    see {@link #run}
 	 * @param convergenceThresholdFraction see {@link #run}
 	 * @return the {@link Result}
@@ -111,18 +135,56 @@ final class DpArbitration {
 	static Result runDetailed(List<PlanableController> resources, double[] priceEurPerKwh,
 			double[] availableCapacityW, double[] availableExportCapacityW, double[] baseLoadW, int maxRounds,
 			double convergenceThresholdFraction) throws OpenemsNamedException {
-		var slotCount = priceEurPerKwh.length;
+		return runDetailed(resources, priceEurPerKwh, priceEurPerKwh, availableCapacityW, availableExportCapacityW,
+				baseLoadW, maxRounds, convergenceThresholdFraction);
+	}
+
+	/**
+	 * Same as {@link #run}, but with separate buy and sell prices, also
+	 * returning every resource's final plan, and taking the base load the
+	 * residual for balancing resources and the rest of the site's grid power
+	 * include.
+	 *
+	 * @param resources                    see {@link #run}
+	 * @param buyPriceEurPerKwh            one entry per slot: the price for
+	 *                                         buying from the grid
+	 * @param sellPriceEurPerKwh           one entry per slot: the price for
+	 *                                         selling to the grid
+	 * @param availableCapacityW           see {@link #run}
+	 * @param availableExportCapacityW     see {@link #run}
+	 * @param baseLoadW                    one entry per slot: the flat base
+	 *                                         load, part of the residual a
+	 *                                         balancing resource picks up
+	 *                                         and of the rest of the site's
+	 *                                         grid power
+	 * @param maxRounds                    see {@link #run}
+	 * @param convergenceThresholdFraction see {@link #run}
+	 * @return the {@link Result}
+	 * @throws OpenemsNamedException see {@link #run}
+	 */
+	static Result runDetailed(List<PlanableController> resources, double[] buyPriceEurPerKwh,
+			double[] sellPriceEurPerKwh, double[] availableCapacityW, double[] availableExportCapacityW,
+			double[] baseLoadW, int maxRounds, double convergenceThresholdFraction) throws OpenemsNamedException {
+		var prices = new Prices(buyPriceEurPerKwh, sellPriceEurPerKwh);
+		var slotCount = buyPriceEurPerKwh.length;
 		var forecasts = productionForecasts(resources, slotCount);
 		var budget = initialBudget(resources, forecasts, availableCapacityW, baseLoadW);
+		var latestW = initialPlannedPower(resources, forecasts, slotCount);
 
 		var rounds = 0;
+		Map<String, double[]> previousRestOfSite = null;
 		for (var round = 0; round < maxRounds; round++) {
 			rounds++;
-			var requested = createPlans(resources, priceEurPerKwh, budget);
+			var restOfSite = new LinkedHashMap<String, double[]>();
+			var requested = planRound(resources, prices, baseLoadW, latestW, budget, restOfSite);
 			var nextBudget = arbitrate(resources, forecasts, requested, availableCapacityW,
 					availableExportCapacityW, baseLoadW, slotCount);
-			var converged = hasConverged(budget, nextBudget, convergenceThresholdFraction);
+			var converged = previousRestOfSite != null
+					&& hasConverged(budget, nextBudget, convergenceThresholdFraction, 1e-6)
+					&& hasConverged(previousRestOfSite, restOfSite, convergenceThresholdFraction,
+							REST_OF_SITE_FLOOR_W);
 			budget = nextBudget;
+			previousRestOfSite = restOfSite;
 			if (converged) {
 				break;
 			}
@@ -132,9 +194,66 @@ final class DpArbitration {
 		// budget this method is about to return, even when convergence (or
 		// the round cap) was reached on the last round's own arbitration
 		// output rather than its createPlan input.
-		var plans = createPlans(resources, priceEurPerKwh, budget);
+		var plans = planRound(resources, prices, baseLoadW, latestW, budget, new LinkedHashMap<>());
 
 		return new Result(budget, plans, rounds);
+	}
+
+	/**
+	 * One round of planning: balancing resources first, against the others'
+	 * latest plans, then everyone else against those and the balancing
+	 * resources' new plans.
+	 *
+	 * @param resources  every resource
+	 * @param prices     the buy and sell price per slot
+	 * @param baseLoadW  the base load per slot
+	 * @param latestW    each resource's latest planned power per slot, by
+	 *                       Component-ID; updated with this round's plans
+	 * @param budget     each resource's budget per slot, by Component-ID
+	 * @param restOfSite filled with the rest of the site's grid power each
+	 *                       resource planned against, by Component-ID
+	 * @return this round's plans, in registration order
+	 * @throws OpenemsNamedException if a resource's {@code createPlan} fails
+	 */
+	private static Map<String, PlanSummary> planRound(List<PlanableController> resources, Prices prices,
+			double[] baseLoadW, Map<String, double[]> latestW, Map<String, double[]> budget,
+			Map<String, double[]> restOfSite) throws OpenemsNamedException {
+		var plans = new LinkedHashMap<String, PlanSummary>();
+		for (var resource : resources) {
+			if (resource.balancesResidual()) {
+				plan(resource, prices, baseLoadW, latestW, budget, restOfSite, plans);
+				latestW.put(resource.id(), plans.get(resource.id()).powerPerSlotW());
+			}
+		}
+		// The others all see the same site: this round's balancing plans and
+		// each other's previous plans, independent of registration order.
+		for (var resource : resources) {
+			if (!resource.balancesResidual()) {
+				plan(resource, prices, baseLoadW, latestW, budget, restOfSite, plans);
+			}
+		}
+		for (var resource : resources) {
+			latestW.put(resource.id(), plans.get(resource.id()).powerPerSlotW());
+		}
+
+		var ordered = new LinkedHashMap<String, PlanSummary>();
+		for (var resource : resources) {
+			ordered.put(resource.id(), plans.get(resource.id()));
+		}
+		return ordered;
+	}
+
+	private static void plan(PlanableController resource, Prices prices, double[] baseLoadW,
+			Map<String, double[]> latestW, Map<String, double[]> budget, Map<String, double[]> restOfSite,
+			Map<String, PlanSummary> plans) throws OpenemsNamedException {
+		var rest = restOfSite(resource.id(), latestW, baseLoadW);
+		restOfSite.put(resource.id(), rest);
+		var slots = toTimeSlots(prices, rest, budget.get(resource.id()));
+		plans.put(resource.id(), resource.createPlan(slots));
+	}
+
+	/** Buy and sell price per slot. */
+	private record Prices(double[] buyEurPerKwh, double[] sellEurPerKwh) {
 	}
 
 	private static Map<String, double[]> productionForecasts(List<PlanableController> resources, int slotCount) {
@@ -191,20 +310,52 @@ final class DpArbitration {
 		return out;
 	}
 
-	private static Map<String, PlanSummary> createPlans(List<PlanableController> resources, double[] priceEurPerKwh,
-			Map<String, double[]> budget) throws OpenemsNamedException {
-		var requested = new LinkedHashMap<String, PlanSummary>();
+	/**
+	 * Round 0's planned power: producers at their forecast, everyone else idle.
+	 *
+	 * @param resources every resource
+	 * @param forecasts the producers' forecasts, by Component-ID
+	 * @param slotCount the number of slots
+	 * @return the planned power per slot, consumption-positive, by Component-ID
+	 */
+	private static Map<String, double[]> initialPlannedPower(List<PlanableController> resources,
+			Map<String, double[]> forecasts, int slotCount) {
+		var out = new LinkedHashMap<String, double[]>();
 		for (var resource : resources) {
-			var slots = toTimeSlots(priceEurPerKwh, budget.get(resource.id()));
-			requested.put(resource.id(), resource.createPlan(slots));
+			var forecast = forecasts.get(resource.id());
+			out.put(resource.id(), forecast == null ? new double[slotCount] : negated(forecast));
 		}
-		return requested;
+		return out;
 	}
 
-	private static List<TimeSlot> toTimeSlots(double[] priceEurPerKwh, double[] availablePowerW) {
-		var slots = new ArrayList<TimeSlot>(priceEurPerKwh.length);
-		for (var i = 0; i < priceEurPerKwh.length; i++) {
-			slots.add(new TimeSlot(priceEurPerKwh[i], availablePowerW[i]));
+	/**
+	 * The grid power of the rest of the site: the base load plus every other
+	 * resource's latest planned power.
+	 *
+	 * @param id        the resource to leave out
+	 * @param latestW   every resource's latest planned power, by Component-ID
+	 * @param baseLoadW the base load per slot
+	 * @return the rest of the site's grid power per slot, import-positive
+	 */
+	private static double[] restOfSite(String id, Map<String, double[]> latestW, double[] baseLoadW) {
+		var rest = baseLoadW.clone();
+		for (var entry : latestW.entrySet()) {
+			if (entry.getKey().equals(id)) {
+				continue;
+			}
+			var power = entry.getValue();
+			for (var i = 0; i < rest.length; i++) {
+				rest[i] += i < power.length ? power[i] : 0;
+			}
+		}
+		return rest;
+	}
+
+	private static List<TimeSlot> toTimeSlots(Prices prices, double[] restOfSiteW, double[] availablePowerW) {
+		var slots = new ArrayList<TimeSlot>(availablePowerW.length);
+		for (var i = 0; i < availablePowerW.length; i++) {
+			slots.add(new TimeSlot(prices.buyEurPerKwh()[i], prices.sellEurPerKwh()[i], restOfSiteW[i],
+					availablePowerW[i]));
 		}
 		return slots;
 	}
@@ -304,12 +455,12 @@ final class DpArbitration {
 	}
 
 	private static boolean hasConverged(Map<String, double[]> previous, Map<String, double[]> next,
-			double thresholdFraction) {
+			double thresholdFraction, double floor) {
 		for (var id : previous.keySet()) {
 			var a = previous.get(id);
 			var b = next.get(id);
 			for (var i = 0; i < a.length; i++) {
-				var denominator = Math.max(Math.abs(a[i]), 1e-6);
+				var denominator = Math.max(Math.abs(a[i]), floor);
 				if (Math.abs(a[i] - b[i]) / denominator > thresholdFraction) {
 					return false;
 				}

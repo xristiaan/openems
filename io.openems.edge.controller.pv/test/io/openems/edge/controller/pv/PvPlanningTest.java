@@ -8,6 +8,7 @@ import java.util.List;
 
 import org.junit.jupiter.api.Test;
 
+import io.openems.edge.scheduling.algorithm.ExecutionPlan;
 import io.openems.edge.scheduling.algorithm.ExecutionPlanCalculator;
 import io.openems.edge.scheduling.algorithm.PlanTableBuilder;
 import io.openems.edge.scheduling.algorithm.PlanableResourceModel;
@@ -27,13 +28,17 @@ class PvPlanningTest {
 		return new PvPhysicsConfig(4_000, 0.05, 1.0, true, forecastW);
 	}
 
-	private static List<PvMode> plannedModes(PvPhysicsConfig config, List<TimeSlot> slots) {
+	private static ExecutionPlan<PvMode> plan(PvPhysicsConfig config, List<TimeSlot> slots) {
 		var model = new PlanableResourceModel<>(MODES, new StateBuckets(0, 0, 1), new PvModeSwitchingMatrix(),
-				new PvPhysics(config), (mode, slot) -> ControllerPvImpl.resolveTarget(mode, null));
+				new PvPhysics(config),
+				(mode, slot) -> ControllerPvImpl.resolveTarget(mode, null, slots.get(slot).restOfSiteW()));
 		var targets = Collections.nCopies(slots.size(), SlotTarget.unconstrained());
 		var table = PlanTableBuilder.build(model, slots, targets);
-		var plan = ExecutionPlanCalculator.walk(table, slots, targets, 0, PvMode.ON, 0);
-		return plan.slots().stream().map(slot -> slot.mode()).toList();
+		return ExecutionPlanCalculator.walk(table, slots, targets, 0, PvMode.ON, 0);
+	}
+
+	private static List<PvMode> plannedModes(PvPhysicsConfig config, List<TimeSlot> slots) {
+		return plan(config, slots).slots().stream().map(slot -> slot.mode()).toList();
 	}
 
 	@Test
@@ -44,14 +49,33 @@ class PvPlanningTest {
 				new TimeSlot(-0.10, -3_000), //
 				new TimeSlot(0.25, 0)); // night: no production either way
 
-		assertEquals(List.of(PvMode.ON, PvMode.OFF, PvMode.ON), plannedModes(config, slots));
+		// Nothing else on site to cover: FORCED curtails to P_min, same as OFF,
+		// and wins the tie by preference order.
+		var modes = plannedModes(config, slots);
+		assertEquals(List.of(PvMode.ON, PvMode.FORCED, PvMode.ON), modes);
+		assertEquals(-200 * TimeSlot.DURATION_HOURS, plan(config, slots).slots().get(1).energyUsedWh(), 1e-9);
 	}
 
 	@Test
-	void forcedResolvesNoSetpointWithoutOneAndOffNeverHasOne() {
-		assertNull(ControllerPvImpl.resolveTarget(PvMode.FORCED, null));
-		assertNull(ControllerPvImpl.resolveTarget(PvMode.OFF, -1_000.0));
-		assertEquals(-1_000.0, ControllerPvImpl.resolveTarget(PvMode.ON, -1_000.0));
+	void atANegativeSellPriceItCoversTheSitesConsumptionInsteadOfSwitchingOff() {
+		var config = config(3_000);
+		// The rest of the site imports 800 W; selling costs money.
+		var slots = List.of(new TimeSlot(0.25, -0.10, 800, -3_000));
+
+		var plan = plan(config, slots);
+		assertEquals(PvMode.FORCED, plan.slots().get(0).mode());
+		assertEquals(-800 * TimeSlot.DURATION_HOURS, plan.slots().get(0).energyUsedWh(), 1e-9);
+	}
+
+	@Test
+	void forcedWithoutASetpointFollowsTheSiteAndOffNeverHasOne() {
+		assertEquals(-800.0, ControllerPvImpl.resolveTarget(PvMode.FORCED, null, 800));
+		// Already exporting without PV: nothing to cover (the physics keeps P_min).
+		assertEquals(-0.0, ControllerPvImpl.resolveTarget(PvMode.FORCED, null, -500));
+		assertEquals(-1_000.0, ControllerPvImpl.resolveTarget(PvMode.FORCED, -1_000.0, 800));
+		assertNull(ControllerPvImpl.resolveTarget(PvMode.OFF, -1_000.0, 800));
+		assertEquals(-1_000.0, ControllerPvImpl.resolveTarget(PvMode.ON, -1_000.0, 800));
+		assertNull(ControllerPvImpl.resolveTarget(PvMode.ON, null, 800));
 	}
 
 	@Test
