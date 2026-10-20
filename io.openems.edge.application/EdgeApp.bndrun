@@ -83,6 +83,7 @@
 	bnd.identity;id='io.openems.edge.controller.ess.balancing',\
 	bnd.identity;id='io.openems.edge.controller.ess.battery',\
 	bnd.identity;id='io.openems.edge.controller.pv',\
+	bnd.identity;id='io.openems.edge.device.mqtt',\
 	bnd.identity;id='io.openems.edge.controller.ess.cycle',\
 	bnd.identity;id='io.openems.edge.controller.ess.delaycharge',\
 	bnd.identity;id='io.openems.edge.controller.ess.delayedselltogrid',\
@@ -538,6 +539,7 @@
 	io.openems.edge.meter.acrel;version=snapshot,\
 	io.openems.edge.controller.ess.battery;version=snapshot,\
 	io.openems.edge.controller.pv;version=snapshot,\
+	io.openems.edge.device.mqtt;version=snapshot,\
 	io.openems.edge.scheduling.algorithm;version=snapshot,\
 	io.openems.edge.controller.scheduling.dp;version=snapshot,\
 	io.openems.edge.scheduling.api;version=snapshot,\
