@@ -246,6 +246,15 @@ class DpArbitrationTest {
 		public Optional<double[]> productionForecastW(int slotCount) {
 			return Optional.of(this.forecastW.clone());
 		}
+
+		@Override
+		public double[] curtailableProductionW(int slotCount) {
+			var out = new double[slotCount];
+			for (var i = 0; i < slotCount; i++) {
+				out[i] = Math.max(0, this.forecastW[i] - this.minimumW);
+			}
+			return out;
+		}
 	}
 
 	/**
@@ -256,6 +265,7 @@ class DpArbitrationTest {
 			implements PlanableController {
 
 		private final double maxChargeW;
+		private List<TimeSlot> lastSlots;
 
 		FakeChargingBattery(String id, double maxChargeW) {
 			super(id, OpenemsComponent.ChannelId.values());
@@ -269,6 +279,7 @@ class DpArbitrationTest {
 
 		@Override
 		public PlanSummary createPlan(List<TimeSlot> slots) {
+			this.lastSlots = slots;
 			var power = new double[slots.size()];
 			for (var i = 0; i < slots.size(); i++) {
 				power[i] = Math.max(0, Math.min(this.maxChargeW, slots.get(i).availablePowerW()));
@@ -511,5 +522,47 @@ class DpArbitrationTest {
 				new double[] { -0.025 }, new double[] { 12_000 }, unlimitedExport(1), new double[] { 500 }, 6, 0.05);
 
 		assertEquals(-200, result.plans().get("pv0").powerPerSlotW()[0], 1e-6);
+	}
+
+	@Test
+	void aSurplusPvCouldCurtailIsFreeToTheBatteryNotPaid() throws OpenemsNamedException {
+		var pv = new FakeCurtailingPv("pv0", 200, 3_600);
+		var battery = new FakeChargingBattery("battery0", 2_500);
+
+		DpArbitration.runDetailed(List.of(pv, battery), new double[] { 0.10 }, new double[] { -0.025 },
+				new double[] { 12_000 }, unlimitedExport(1), new double[] { 500 }, 6, 0.05);
+
+		// Without the battery, PV would curtail rather than export at −0.025:
+		// charging saves nothing, but costs nothing either.
+		var slot = battery.lastSlots.get(0);
+		assertEquals(500 - 3_600, slot.restOfSiteW(), 1e-6, "PV at its forecast");
+		assertEquals(3_400, slot.curtailableW(), 1e-6);
+		assertEquals(0, slot.energyCostEur(2_500 * TimeSlot.DURATION_HOURS), 1e-12);
+	}
+
+	@Test
+	void theBatteryIsOfferedTheForecastSurplusEvenWhilePvPlansToCurtail() throws OpenemsNamedException {
+		var pv = new FakeCurtailingPv("pv0", 200, 3_600);
+		var fullBattery = new FakeChargingBattery("battery0", 0);
+
+		var result = DpArbitration.runDetailed(List.of(pv, fullBattery), new double[] { 0.10 },
+				new double[] { -0.025 }, new double[] { 12_000 }, unlimitedExport(1), new double[] { 500 }, 6, 0.05);
+
+		assertEquals(-200, result.plans().get("pv0").powerPerSlotW()[0], 1e-6, "PV curtails");
+		assertEquals(3_100, result.budget().get("battery0")[0], 1e-6, "3.6kW forecast - 0.5kW base load");
+	}
+
+	@Test
+	void withoutFeedInTheBatteryChargesFromPvBeyondTheHouseLoad() throws OpenemsNamedException {
+		// No export allowed: the export capacity is just the base load.
+		var pv = new FakeCurtailingPv("pv0", 200, 3_600);
+		var battery = new FakeChargingBattery("battery0", 2_500);
+
+		var result = DpArbitration.runDetailed(List.of(pv, battery), new double[] { 0.25 }, new double[] { 0.05 },
+				new double[] { 12_000 }, new double[] { 500 }, new double[] { 500 }, 6, 0.05);
+
+		assertEquals(2_500, result.plans().get("battery0").powerPerSlotW()[0], 1e-6);
+		assertEquals(-3_000, result.budget().get("pv0")[0], 1e-6, "0.5kW base load + 2.5kW charging");
+		assertEquals(-3_000, result.plans().get("pv0").powerPerSlotW()[0], 1e-6, "nothing exported");
 	}
 }

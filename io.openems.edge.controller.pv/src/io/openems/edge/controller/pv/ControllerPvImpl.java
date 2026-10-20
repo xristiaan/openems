@@ -141,12 +141,18 @@ public class ControllerPvImpl extends AbstractOpenemsComponent
 	}
 
 	@Override
-	public PlanSummary createPlan(List<TimeSlot> slots) throws OpenemsNamedException {
-		if (this.forecastW == null || this.forecastW.length != slots.size()) {
-			this.forecastW = this.readForecast(slots.size());
+	public double[] curtailableProductionW(int slotCount) {
+		var physicsConfig = this.physicsConfig(slotCount);
+		var out = new double[slotCount];
+		for (var i = 0; i < slotCount; i++) {
+			out[i] = physicsConfig.curtailableW(i);
 		}
-		var physicsConfig = new PvPhysicsConfig(this.config.inverterRatedW(), this.config.pFracMin(),
-				this.config.pFracMax(), this.config.curtailmentSupported(), this.forecastW.clone());
+		return out;
+	}
+
+	@Override
+	public PlanSummary createPlan(List<TimeSlot> slots) throws OpenemsNamedException {
+		var physicsConfig = this.physicsConfig(slots.size());
 		var physics = new PvPhysics(physicsConfig);
 
 		// Deviation cost is 0 for PV (producing less than the limit because
@@ -290,6 +296,14 @@ public class ControllerPvImpl extends AbstractOpenemsComponent
 			return -Math.max(0, restOfSiteW);
 		}
 		return setpointW;
+	}
+
+	private PvPhysicsConfig physicsConfig(int slotCount) {
+		if (this.forecastW == null || this.forecastW.length != slotCount) {
+			this.forecastW = this.readForecast(slotCount);
+		}
+		return new PvPhysicsConfig(this.config.inverterRatedW(), this.config.pFracMin(), this.config.pFracMax(),
+				this.config.curtailmentSupported(), this.forecastW.clone());
 	}
 
 	private Double setpointW() {

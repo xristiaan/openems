@@ -54,4 +54,18 @@ public record PvPhysicsConfig(//
 		}
 		return Math.max(0, Math.min(this.forecastW[slot], this.inverterRatedW));
 	}
+
+	/**
+	 * How much of a slot's production could be curtailed: what it would
+	 * produce uncurtailed, minus the {@code P_min} it produces regardless.
+	 *
+	 * @param slot the slot index
+	 * @return the curtailable power, in W; 0 if curtailment isn't supported
+	 */
+	public double curtailableW(int slot) {
+		if (!this.curtailmentSupported) {
+			return 0;
+		}
+		return Math.max(0, Math.min(this.availableW(slot), this.pMaxW()) - this.pMinW());
+	}
 }

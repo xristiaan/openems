@@ -81,6 +81,26 @@ public interface PlanableController extends OpenemsComponent {
 	}
 
 	/**
+	 * Curtailable production: for a producer, how much of its
+	 * {@link #productionForecastW forecast} it could curtail each slot, in
+	 * watts, as positive magnitudes — the forecast minus whatever it produces
+	 * regardless (its minimum output), or nothing if it can't curtail at all.
+	 * Other resources then cost energy taken from this part of a surplus as
+	 * free where exporting it wouldn't pay, since it would be curtailed
+	 * instead (see {@code TimeSlot#energyCostEur}).
+	 *
+	 * <p>
+	 * Only asked of resources that report a production forecast, after
+	 * {@link #productionForecastW}. Default: nothing curtailable.
+	 *
+	 * @param slotCount the number of slots being planned
+	 * @return the curtailable production, one entry per slot
+	 */
+	default double[] curtailableProductionW(int slotCount) {
+		return new double[slotCount];
+	}
+
+	/**
 	 * Whether this resource balances the plan: it picks up the slack other
 	 * resources leave. A balancing resource (a battery) is arbitrated last,
 	 * and its budget each slot is the signed residual of everyone else's plan

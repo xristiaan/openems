@@ -44,7 +44,9 @@ class PvPhysicsTest {
 	}
 
 	@Test
-	void forcedWithoutASetpointBehavesLikeOn() {
+	void forcedPhysicsWithoutASetpointProducesLikeOn() {
+		// The controller always resolves one for FORCED (the site's
+		// consumption); the physics alone falls back to P_max.
 		var forced = physics(true, 3_000).apply(0, PvMode.FORCED, 0, NO_BUDGET_CAP, null);
 		var on = physics(true, 3_000).apply(0, PvMode.ON, 0, NO_BUDGET_CAP, null);
 
@@ -70,6 +72,22 @@ class PvPhysicsTest {
 		var result = physics(false, 3_000).apply(0, PvMode.OFF, 0, -1_000, -500.0);
 
 		assertEquals(-3_000, result.nextState(), 1e-9);
+	}
+
+	@Test
+	void everythingAboveTheMinimumIsCurtailable() {
+		var config = new PvPhysicsConfig(RATED_W, 0.05, 1.0, true, new double[] { 3_000, 100, 6_000 });
+
+		assertEquals(2_800, config.curtailableW(0), 1e-9, "3kW minus P_min = 200W");
+		assertEquals(0, config.curtailableW(1), 1e-9, "below P_min: nothing to curtail");
+		assertEquals(3_800, config.curtailableW(2), 1e-9, "capped at the rating");
+	}
+
+	@Test
+	void withoutCurtailmentSupportNothingIsCurtailable() {
+		var config = new PvPhysicsConfig(RATED_W, 0.05, 1.0, false, new double[] { 3_000 });
+
+		assertEquals(0, config.curtailableW(0), 1e-9);
 	}
 
 	@Test

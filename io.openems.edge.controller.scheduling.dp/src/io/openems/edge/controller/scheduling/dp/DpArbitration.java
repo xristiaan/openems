@@ -41,18 +41,27 @@ import io.openems.edge.scheduling.api.PlanableController;
  * <p>
  * Balancing: a resource that {@link PlanableController#balancesResidual()
  * balances the residual} (a battery) takes no part in the above. It comes
- * last, with the signed residual of all other plans and the base load as its
- * budget — surplus to absorb, or shortfall to provide — and its own supply
- * or consumption doesn't change the other resources' budgets. So it never
- * charges from the grid: it only picks up slack.
+ * last, with the signed residual of the base load, the other consumers'
+ * plans and the producers' <em>forecast</em> as its budget — surplus to
+ * absorb, or shortfall to provide. Producers count at their forecast, not
+ * their plan, so production a producer curtails for lack of a taker is
+ * still offered to the battery; its charging in turn adds to the producers'
+ * export headroom. Its supply doesn't change the consumers' budgets, so it
+ * never charges from the grid: it only picks up slack.
  *
  * <p>
  * Prices: besides its budget, each resource gets the buy and sell price and
- * the grid power of the rest of the site per slot — the base load plus every
- * other resource's latest plan. It costs its own energy as the change it
- * makes to the site's grid bill ({@code TimeSlot#energyCostEur}), so e.g.
- * consuming from a PV surplus costs only the sell price, and PV covering the
- * site's own consumption saves the buy price.
+ * the grid power of the rest of the site per slot — the base load, every
+ * other consumer's latest plan and every other producer at its forecast —
+ * together with how much of that production could be curtailed and the
+ * export capacity. It costs its own energy as the change it makes to the
+ * site's grid bill ({@code TimeSlot#energyCostEur}), so e.g. consuming from
+ * a PV surplus costs only the sell price, PV covering the site's own
+ * consumption saves the buy price, and taking a surplus PV would otherwise
+ * curtail (negative sell price, or beyond the export capacity) is free. That
+ * is the priority between producers and the resources that can absorb their
+ * surplus: curtailing is the last resort, and the picture an absorbing
+ * resource plans against doesn't depend on whether PV curtailed last round.
  *
  * <p>
  * Within a round, balancing resources plan first, against the others' plans
@@ -168,6 +177,8 @@ final class DpArbitration {
 		var prices = new Prices(buyPriceEurPerKwh, sellPriceEurPerKwh);
 		var slotCount = buyPriceEurPerKwh.length;
 		var forecasts = productionForecasts(resources, slotCount);
+		var site = new Site(baseLoadW, forecasts, curtailableProduction(resources, forecasts, slotCount),
+				gridExportCapacity(availableExportCapacityW, baseLoadW));
 		var budget = initialBudget(resources, forecasts, availableCapacityW, baseLoadW);
 		var latestW = initialPlannedPower(resources, forecasts, slotCount);
 
@@ -176,7 +187,7 @@ final class DpArbitration {
 		for (var round = 0; round < maxRounds; round++) {
 			rounds++;
 			var restOfSite = new LinkedHashMap<String, double[]>();
-			var requested = planRound(resources, prices, baseLoadW, latestW, budget, restOfSite);
+			var requested = planRound(resources, prices, site, latestW, budget, restOfSite);
 			var nextBudget = arbitrate(resources, forecasts, requested, availableCapacityW,
 					availableExportCapacityW, baseLoadW, slotCount);
 			var converged = previousRestOfSite != null
@@ -194,7 +205,7 @@ final class DpArbitration {
 		// budget this method is about to return, even when convergence (or
 		// the round cap) was reached on the last round's own arbitration
 		// output rather than its createPlan input.
-		var plans = planRound(resources, prices, baseLoadW, latestW, budget, new LinkedHashMap<>());
+		var plans = planRound(resources, prices, site, latestW, budget, new LinkedHashMap<>());
 
 		return new Result(budget, plans, rounds);
 	}
@@ -206,7 +217,7 @@ final class DpArbitration {
 	 *
 	 * @param resources  every resource
 	 * @param prices     the buy and sell price per slot
-	 * @param baseLoadW  the base load per slot
+	 * @param site       the base load, the producers and the export capacity
 	 * @param latestW    each resource's latest planned power per slot, by
 	 *                       Component-ID; updated with this round's plans
 	 * @param budget     each resource's budget per slot, by Component-ID
@@ -216,12 +227,12 @@ final class DpArbitration {
 	 * @throws OpenemsNamedException if a resource's {@code createPlan} fails
 	 */
 	private static Map<String, PlanSummary> planRound(List<PlanableController> resources, Prices prices,
-			double[] baseLoadW, Map<String, double[]> latestW, Map<String, double[]> budget,
+			Site site, Map<String, double[]> latestW, Map<String, double[]> budget,
 			Map<String, double[]> restOfSite) throws OpenemsNamedException {
 		var plans = new LinkedHashMap<String, PlanSummary>();
 		for (var resource : resources) {
 			if (resource.balancesResidual()) {
-				plan(resource, prices, baseLoadW, latestW, budget, restOfSite, plans);
+				plan(resource, prices, site, latestW, budget, restOfSite, plans);
 				latestW.put(resource.id(), plans.get(resource.id()).powerPerSlotW());
 			}
 		}
@@ -229,7 +240,7 @@ final class DpArbitration {
 		// each other's previous plans, independent of registration order.
 		for (var resource : resources) {
 			if (!resource.balancesResidual()) {
-				plan(resource, prices, baseLoadW, latestW, budget, restOfSite, plans);
+				plan(resource, prices, site, latestW, budget, restOfSite, plans);
 			}
 		}
 		for (var resource : resources) {
@@ -243,17 +254,81 @@ final class DpArbitration {
 		return ordered;
 	}
 
-	private static void plan(PlanableController resource, Prices prices, double[] baseLoadW,
+	private static void plan(PlanableController resource, Prices prices, Site site,
 			Map<String, double[]> latestW, Map<String, double[]> budget, Map<String, double[]> restOfSite,
 			Map<String, PlanSummary> plans) throws OpenemsNamedException {
-		var rest = restOfSite(resource.id(), latestW, baseLoadW);
+		var rest = restOfSite(resource.id(), latestW, site);
 		restOfSite.put(resource.id(), rest);
-		var slots = toTimeSlots(prices, rest, budget.get(resource.id()));
+		var slots = toTimeSlots(prices, rest, site.curtailableWithout(resource.id()), site.gridExportCapacityW(),
+				budget.get(resource.id()));
 		plans.put(resource.id(), resource.createPlan(slots));
 	}
 
 	/** Buy and sell price per slot. */
 	private record Prices(double[] buyEurPerKwh, double[] sellEurPerKwh) {
+	}
+
+	/**
+	 * What every resource's picture of the rest of the site is built from,
+	 * besides the others' plans.
+	 *
+	 * @param baseLoadW           the base load per slot
+	 * @param forecasts           the producers' forecasts, by Component-ID
+	 * @param curtailableW        the producers' curtailable production, by
+	 *                                Component-ID
+	 * @param gridExportCapacityW how much the site may export per slot
+	 */
+	private record Site(double[] baseLoadW, Map<String, double[]> forecasts, Map<String, double[]> curtailableW,
+			double[] gridExportCapacityW) {
+
+		/**
+		 * The curtailable production of every producer but one.
+		 *
+		 * @param id the resource to leave out
+		 * @return the curtailable production per slot
+		 */
+		double[] curtailableWithout(String id) {
+			var out = new double[this.baseLoadW.length];
+			for (var entry : this.curtailableW.entrySet()) {
+				if (!entry.getKey().equals(id)) {
+					for (var i = 0; i < out.length; i++) {
+						out[i] += entry.getValue()[i];
+					}
+				}
+			}
+			return out;
+		}
+	}
+
+	private static Map<String, double[]> curtailableProduction(List<PlanableController> resources,
+			Map<String, double[]> forecasts, int slotCount) {
+		var out = new LinkedHashMap<String, double[]>();
+		for (var resource : resources) {
+			if (!forecasts.containsKey(resource.id())) {
+				continue;
+			}
+			var curtailable = resource.curtailableProductionW(slotCount);
+			if (curtailable.length != slotCount) {
+				throw new IllegalArgumentException(
+						"Curtailable production of " + resource.id() + " must have " + slotCount + " slots");
+			}
+			var clamped = new double[slotCount];
+			for (var i = 0; i < slotCount; i++) {
+				clamped[i] = Math.max(0, Math.min(curtailable[i], forecasts.get(resource.id())[i]));
+			}
+			out.put(resource.id(), clamped);
+		}
+		return out;
+	}
+
+	private static double[] gridExportCapacity(double[] availableExportCapacityW, double[] baseLoadW) {
+		// The export capacity given here already counts the base load as
+		// absorbing production; the grid's own limit is without it.
+		var out = new double[availableExportCapacityW.length];
+		for (var i = 0; i < out.length; i++) {
+			out[i] = Math.max(0, availableExportCapacityW[i] - baseLoadW[i]);
+		}
+		return out;
 	}
 
 	private static Map<String, double[]> productionForecasts(List<PlanableController> resources, int slotCount) {
@@ -330,20 +405,22 @@ final class DpArbitration {
 
 	/**
 	 * The grid power of the rest of the site: the base load plus every other
-	 * resource's latest planned power.
+	 * resource's latest planned power — producers at their forecast instead,
+	 * since what they curtail is still on offer.
 	 *
-	 * @param id        the resource to leave out
-	 * @param latestW   every resource's latest planned power, by Component-ID
-	 * @param baseLoadW the base load per slot
+	 * @param id      the resource to leave out
+	 * @param latestW every resource's latest planned power, by Component-ID
+	 * @param site    the base load and the producers' forecasts
 	 * @return the rest of the site's grid power per slot, import-positive
 	 */
-	private static double[] restOfSite(String id, Map<String, double[]> latestW, double[] baseLoadW) {
-		var rest = baseLoadW.clone();
+	private static double[] restOfSite(String id, Map<String, double[]> latestW, Site site) {
+		var rest = site.baseLoadW().clone();
 		for (var entry : latestW.entrySet()) {
 			if (entry.getKey().equals(id)) {
 				continue;
 			}
-			var power = entry.getValue();
+			var forecast = site.forecasts().get(entry.getKey());
+			var power = forecast != null ? negated(forecast) : entry.getValue();
 			for (var i = 0; i < rest.length; i++) {
 				rest[i] += i < power.length ? power[i] : 0;
 			}
@@ -351,11 +428,12 @@ final class DpArbitration {
 		return rest;
 	}
 
-	private static List<TimeSlot> toTimeSlots(Prices prices, double[] restOfSiteW, double[] availablePowerW) {
+	private static List<TimeSlot> toTimeSlots(Prices prices, double[] restOfSiteW, double[] curtailableW,
+			double[] exportCapacityW, double[] availablePowerW) {
 		var slots = new ArrayList<TimeSlot>(availablePowerW.length);
 		for (var i = 0; i < availablePowerW.length; i++) {
 			slots.add(new TimeSlot(prices.buyEurPerKwh()[i], prices.sellEurPerKwh()[i], restOfSiteW[i],
-					availablePowerW[i]));
+					curtailableW[i], exportCapacityW[i], availablePowerW[i]));
 		}
 		return slots;
 	}
@@ -410,20 +488,27 @@ final class DpArbitration {
 			var consumedW = start - remaining;
 
 			// Producers: bounded by their forecast, curtailed only as far as
-			// the export capacity requires.
-			var exportHeadroomW = availableExportCapacityW[slot] + consumedW - otherSupplyW;
+			// the export capacity requires. A balancing resource's charging
+			// counts as consumption here: it's what lets it take a surplus
+			// beyond the export capacity.
+			var balancingChargeW = 0.0;
+			for (var resource : balancing) {
+				balancingChargeW += Math.max(0, requested.get(resource.id()).powerPerSlotW()[slot]);
+			}
+			var exportHeadroomW = availableExportCapacityW[slot] + consumedW + balancingChargeW - otherSupplyW;
 			for (var resource : producers) {
 				var grant = Math.min(Math.max(0, forecasts.get(resource.id())[slot]), Math.max(0, exportHeadroomW));
 				nextBudget.get(resource.id())[slot] = -grant;
 				exportHeadroomW -= grant;
 			}
 
-			// Balancing resources, last: the signed residual of everyone
-			// else's plan and the base load — positive surplus to absorb,
-			// negative shortfall to provide — shared in registration order.
+			// Balancing resources, last: the signed residual of the base load,
+			// the consumers' plans and the producers' forecast — positive
+			// surplus to absorb, negative shortfall to provide — shared in
+			// registration order.
 			var residualW = -baseLoadW[slot];
 			for (var resource : producers) {
-				residualW -= requested.get(resource.id()).powerPerSlotW()[slot];
+				residualW += Math.max(0, forecasts.get(resource.id())[slot]);
 			}
 			for (var resource : others) {
 				residualW -= requested.get(resource.id()).powerPerSlotW()[slot];
