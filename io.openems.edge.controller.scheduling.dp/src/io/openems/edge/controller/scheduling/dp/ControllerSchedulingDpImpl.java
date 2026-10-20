@@ -25,7 +25,8 @@ import io.openems.edge.common.component.AbstractOpenemsComponent;
 import io.openems.edge.common.component.OpenemsComponent;
 import io.openems.edge.controller.api.Controller;
 import io.openems.edge.scheduling.api.PlanableController;
-import io.openems.edge.timeofusetariff.api.TimeOfUseTariff;
+import io.openems.edge.timeofusetariff.api.TariffManager;
+import io.openems.edge.timeofusetariff.api.TimeOfUsePrices;
 
 /**
  * The DP (Dynamic Programming) Controller: the Allocator. Collects every
@@ -44,6 +45,14 @@ import io.openems.edge.timeofusetariff.api.TimeOfUseTariff;
  * Tier-2 ordering is plain
  * registration order, not the marginal-cost refinement logged as a post-MVP
  * item.
+ *
+ * <p>
+ * Prices come from the {@link TariffManager}: the grid-buy and grid-sell
+ * day-ahead prices. Sell prices fall back to the buy price per slot where none
+ * is known. Both are logged with the plan, but resources are still costed at
+ * the buy price only: which of the two a resource's energy is worth depends on
+ * whether the site imports or exports in that slot, which is part of the
+ * arbitration strategy still to be decided.
  */
 @Designate(ocd = Config.class, factory = true)
 @Component(//
@@ -62,7 +71,7 @@ public class ControllerSchedulingDpImpl extends AbstractOpenemsComponent impleme
 	private volatile List<PlanableController> planableControllers;
 
 	@Reference(policy = DYNAMIC, policyOption = GREEDY, cardinality = OPTIONAL)
-	private volatile TimeOfUseTariff timeOfUseTariff = null;
+	private volatile TariffManager tariffManager = null;
 
 	private Config config;
 	private Instant lastPlannedSlotStart;
@@ -112,7 +121,14 @@ public class ControllerSchedulingDpImpl extends AbstractOpenemsComponent impleme
 			return;
 		}
 
-		var priceEurPerKwh = this.priceForecast();
+		var slotCount = this.config.planningHorizonSlots();
+		var tariffManager = this.tariffManager;
+		var priceEurPerKwh = pricesEurPerKwh(
+				tariffManager == null ? TimeOfUsePrices.EMPTY_PRICES : tariffManager.getGridBuyDayAheadPrices(),
+				flatPrice(slotCount, this.config.fallbackPriceEurPerKwh()));
+		var sellPriceEurPerKwh = pricesEurPerKwh(
+				tariffManager == null ? TimeOfUsePrices.EMPTY_PRICES : tariffManager.getGridSellDayAheadPrices(),
+				priceEurPerKwh);
 		var availableCapacityW = this.availableCapacity(priceEurPerKwh.length);
 		var availableExportCapacityW = this.availableExportCapacity(priceEurPerKwh.length);
 
@@ -124,7 +140,7 @@ public class ControllerSchedulingDpImpl extends AbstractOpenemsComponent impleme
 				this.config.convergenceThresholdFraction());
 		if (this.config.logPlan()) {
 			this.logInfo(this.log, PlanTable.format(currentSlotStart(now), ZoneId.systemDefault(), priceEurPerKwh,
-					this.config.baseLoadW(), result));
+					sellPriceEurPerKwh, this.config.baseLoadW(), result));
 		}
 
 		for (var resource : resources) {
@@ -132,24 +148,22 @@ public class ControllerSchedulingDpImpl extends AbstractOpenemsComponent impleme
 		}
 	}
 
-	private double[] priceForecast() {
-		var slotCount = this.config.planningHorizonSlots();
-		var tariff = this.timeOfUseTariff;
-		var fallbackPriceEurPerKwh = this.config.fallbackPriceEurPerKwh();
-
-		if (tariff == null) {
-			return flatPrice(slotCount, fallbackPriceEurPerKwh);
-		}
-		var pricesEurPerMwh = tariff.getPrices().asArray();
-		if (pricesEurPerMwh.length == 0) {
-			return flatPrice(slotCount, fallbackPriceEurPerKwh);
-		}
-
-		var out = new double[slotCount];
-		for (var i = 0; i < slotCount; i++) {
-			var priceEurPerMwh = i < pricesEurPerMwh.length ? pricesEurPerMwh[i]
-					: pricesEurPerMwh[pricesEurPerMwh.length - 1];
-			out[i] = priceEurPerMwh == null ? fallbackPriceEurPerKwh : priceEurPerMwh / MWH_PER_KWH;
+	/**
+	 * The prices for the planning horizon in Euro/kWh, one per slot of the
+	 * fallback: where the tariff has none (no tariff, a gap, or beyond its last
+	 * price), the fallback's price for that slot.
+	 *
+	 * @param prices   the tariff's prices, in Euro/MWh
+	 * @param fallback the prices to fall back to, in Euro/kWh; its length is the
+	 *                 planning horizon
+	 * @return the prices in Euro/kWh
+	 */
+	static double[] pricesEurPerKwh(TimeOfUsePrices prices, double[] fallback) {
+		var pricesEurPerMwh = prices.asArray();
+		var out = new double[fallback.length];
+		for (var i = 0; i < out.length; i++) {
+			var priceEurPerMwh = i < pricesEurPerMwh.length ? pricesEurPerMwh[i] : null;
+			out[i] = priceEurPerMwh == null ? fallback[i] : priceEurPerMwh / MWH_PER_KWH;
 		}
 		return out;
 	}

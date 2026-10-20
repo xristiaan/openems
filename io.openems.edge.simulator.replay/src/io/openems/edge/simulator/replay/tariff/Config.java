@@ -5,7 +5,7 @@ import org.osgi.service.metatype.annotations.ObjectClassDefinition;
 
 @ObjectClassDefinition(//
 		name = "Time-Of-Use Tariff Replay", //
-		description = "Replays the day-ahead prices of recorded test days (test-data/days/*.json) against the real clock.")
+		description = "Replays the day-ahead prices of recorded test days (test-data/days/*.json) against the real clock, as buy and sell prices.")
 @interface Config {
 
 	@AttributeDefinition(name = "Component-ID", description = "Unique ID of this Component")
@@ -26,11 +26,14 @@ import org.osgi.service.metatype.annotations.ObjectClassDefinition;
 	@AttributeDefinition(name = "Time zone", description = "Local time zone of the test days.")
 	String timeZone() default "Europe/Amsterdam";
 
-	@AttributeDefinition(name = "Price add-on", description = "Added to the spot price before the factor, in Euro/kWh (e.g. energy tax and supplier markup).")
-	double priceAddEurPerKwh() default 0.0;
+	@AttributeDefinition(name = "Buy price", description = "Price for buying from the grid, in Euro/MWh, as an expression: [x] is the spot price, [y] the surcharge from the schedule, both in Euro/MWh. E.g. \"(x + y + 130) * 1.21\" for a supplier markup and energy tax of 130 Euro/MWh plus VAT.")
+	String buyExpression() default "x + y";
 
-	@AttributeDefinition(name = "Price factor", description = "Multiplies the spot price plus add-on (e.g. 1.21 for VAT).")
-	double priceFactor() default 1.0;
+	@AttributeDefinition(name = "Sell price", description = "Price for selling to the grid, in Euro/MWh, as an expression of [x] and [y] as above. E.g. \"0.5 * x - 20\" for half the spot price minus a feed-in fee (no taxes are refunded). Empty: no sell prices are given, and consumers of the tariff fall back to the buy price.")
+	String sellExpression() default "";
+
+	@AttributeDefinition(name = "Surcharge schedule", description = "Time-of-day and seasonal surcharges, the [y] above, in Euro/MWh: a JSON array in the format of OpenEMS's ancillary-cost schedule (per year: low, standard and high rates; per quarter: daily time ranges with the rate that applies). Empty: [y] is 0.")
+	String surchargeSchedule() default "";
 
 	@AttributeDefinition(name = "Prices published at", description = "Local hour from which the next day's prices are known, as on the day-ahead market.")
 	int pricesPublishedAtHour() default 13;

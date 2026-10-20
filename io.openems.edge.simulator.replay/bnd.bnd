@@ -12,6 +12,7 @@ Bundle-Version: 1.0.0.${tstamp}
 	io.openems.edge.pvinverter.api,\
 	io.openems.edge.timedata.api,\
 	io.openems.edge.timeofusetariff.api,\
+	io.openems.wrapper.javaluator,\
 
 -testpath: \
 	${testpath}

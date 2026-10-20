@@ -10,7 +10,7 @@ import io.openems.edge.scheduling.api.PlanSummary;
 
 /**
  * Formats an arbitration result as a plain-text table, one row per slot: the
- * price, each resource's planned mode, power (and state, if it reports one),
+ * buy and sell price, each resource's planned mode, power (and state, if it reports one),
  * and the resulting grid power. For diagnostics (the {@code logPlan} option),
  * not for any decision.
  */
@@ -27,19 +27,20 @@ final class PlanTable {
 	 *
 	 * @param planStart      the start of the first slot
 	 * @param zone           the time zone to show slot times in
-	 * @param priceEurPerKwh the price per slot
+	 * @param priceEurPerKwh the buy price per slot
+	 * @param sellEurPerKwh  the sell price per slot
 	 * @param baseLoadW      the flat base load included in the grid power
 	 * @param result         the arbitration result
 	 * @return the table, one line per slot after a header
 	 */
-	static String format(Instant planStart, ZoneId zone, double[] priceEurPerKwh, double baseLoadW,
-			DpArbitration.Result result) {
+	static String format(Instant planStart, ZoneId zone, double[] priceEurPerKwh, double[] sellEurPerKwh,
+			double baseLoadW, DpArbitration.Result result) {
 		var plans = result.plans();
 		var out = new StringBuilder();
 		out.append(String.format(Locale.ROOT, "Plan from %s, %d slots, %d rounds%n",
 				TIME.format(planStart.atZone(zone)), priceEurPerKwh.length, result.rounds()));
 
-		out.append("time  |   price");
+		out.append("time  |     buy |    sell");
 		for (var entry : plans.entrySet()) {
 			out.append(String.format(Locale.ROOT, " | %-24s", entry.getKey()));
 		}
@@ -47,7 +48,7 @@ final class PlanTable {
 
 		for (var i = 0; i < priceEurPerKwh.length; i++) {
 			out.append(TIME.format(planStart.plus(SLOT.multipliedBy(i)).atZone(zone)));
-			out.append(String.format(Locale.ROOT, " | %7.4f", priceEurPerKwh[i]));
+			out.append(String.format(Locale.ROOT, " | %7.4f | %7.4f", priceEurPerKwh[i], value(sellEurPerKwh, i)));
 			var gridW = baseLoadW;
 			for (var plan : plans.values()) {
 				out.append(" | ").append(cell(plan, i));

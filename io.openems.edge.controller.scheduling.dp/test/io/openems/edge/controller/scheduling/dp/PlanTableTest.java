@@ -24,12 +24,14 @@ class PlanTableTest {
 		var result = new DpArbitration.Result(Map.of(), plans, 2);
 
 		var table = PlanTable.format(Instant.parse("2026-10-20T11:00:00Z"), ZoneOffset.UTC,
-				new double[] { 0.10, -0.05 }, 500, result);
+				new double[] { 0.10, -0.05 }, new double[] { 0.04, -0.06 }, 500, result);
 		var lines = table.split("\\R");
 
 		assertEquals(4, lines.length, "title, header and one row per slot");
 		assertTrue(lines[0].startsWith("Plan from 11:00, 2 slots, 2 rounds"), lines[0]);
-		assertTrue(lines[2].matches("11:00 \\|  0\\.1000 \\| ON\\s+2500 W 0\\.550\\s+\\| ON\\s+-3000 W\\s+\\|\\s+0"),
+		assertTrue(lines[1].startsWith("time  |     buy |    sell |"), lines[1]);
+		assertTrue(lines[2].matches(
+				"11:00 \\|  0\\.1000 \\|  0\\.0400 \\| ON\\s+2500 W 0\\.550\\s+\\| ON\\s+-3000 W\\s+\\|\\s+0"),
 				lines[2]);
 		assertTrue(lines[3].endsWith("|     300"), "grid = base load + battery + PV: " + lines[3]);
 	}
@@ -37,7 +39,7 @@ class PlanTableTest {
 	@Test
 	void aResourceWithoutModesShowsAQuestionMark() {
 		var plans = Map.of("x", new PlanSummary(new double[] { 100 }, new double[1]));
-		var table = PlanTable.format(Instant.EPOCH, ZoneOffset.UTC, new double[] { 0.2 }, 0,
+		var table = PlanTable.format(Instant.EPOCH, ZoneOffset.UTC, new double[] { 0.2 }, new double[] { 0.2 }, 0,
 				new DpArbitration.Result(Map.of(), plans, 1));
 
 		assertTrue(table.contains("| ?          100 W"), table);

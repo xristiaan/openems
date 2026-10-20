@@ -17,7 +17,13 @@ class ReplayDataTest {
 	private static final ZoneId AMSTERDAM = ZoneId.of("Europe/Amsterdam");
 	private static final LocalDate START = LocalDate.parse("2026-10-19");
 
-	/** A test day whose slot i has price i + offset and PV actual i. */
+	/**
+	 * A test day whose slot i has price i + offset and PV actual i.
+	 *
+	 * @param slots  the number of slots
+	 * @param offset added to each slot's price
+	 * @return the slots
+	 */
 	private static List<Slot> day(int slots, double offset) {
 		var day = new ArrayList<Slot>();
 		for (var i = 0; i < slots; i++) {
