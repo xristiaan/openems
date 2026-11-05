@@ -3,6 +3,7 @@ package io.openems.edge.meter.opendtu;
 import static io.openems.common.utils.JsonUtils.getAsFloat;
 import static io.openems.common.utils.JsonUtils.getAsJsonArray;
 import static io.openems.common.utils.JsonUtils.getAsJsonObject;
+import static io.openems.common.utils.JsonUtils.getAsOptionalBoolean;
 import static io.openems.common.utils.JsonUtils.getAsOptionalDouble;
 import static io.openems.edge.common.channel.ChannelUtils.setValue;
 import static java.lang.Math.round;
@@ -199,10 +200,15 @@ public class MeterOpenDtuImpl extends AbstractOpenemsComponent implements MeterO
 					voltage = round(getAsFloat(getAsJsonObject(ac0, "Voltage"), "v") * 1000);
 					current = round(getAsFloat(getAsJsonObject(ac0, "Current"), "v") * 1000);
 
-					limitRelative = getAsOptionalDouble(inverter, "limit_relative").orElse(null);
-					limit = getAsOptionalDouble(inverter, "limit_absolute").map(Math::round).map(Long::intValue)
-							.orElse(null);
-					if (limit != null && limitRelative != null && limitRelative > 0) {
+					// An inverter that is off (at night) reports limit_relative 0 and
+					// limit_absolute -1: no limit is known then
+					var reachable = getAsOptionalBoolean(inverter, "reachable").orElse(true);
+					var relative = getAsOptionalDouble(inverter, "limit_relative").orElse(null);
+					var absolute = getAsOptionalDouble(inverter, "limit_absolute").map(Math::round)
+							.map(Long::intValue).orElse(null);
+					if (reachable && relative != null && relative > 0 && absolute != null && absolute >= 0) {
+						limitRelative = relative;
+						limit = absolute;
 						this.maxPower = (int) Math.round(limit * 100 / limitRelative);
 					}
 				}

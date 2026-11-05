@@ -188,4 +188,53 @@ public class MeterOpenDtuImplTest {
 						.output(MeterOpenDtu.ChannelId.LIMIT_WRITE_FAILED, false)) //
 				.deactivate();
 	}
+
+	private static final String LIVEDATA_AT_NIGHT = """
+			{
+			   "inverters":[
+			      {
+			         "serial":"1234567890",
+			         "reachable":false,
+			         "limit_relative":0,
+			         "limit_absolute":-1,
+			         "AC":{
+			            "0":{
+			               "Power":{"v":0,"u":"W","d":1},
+			               "Voltage":{"v":0,"u":"V","d":1},
+			               "Current":{"v":0,"u":"A","d":2}
+			            }
+			         }
+			      }
+			   ]
+			}
+			""";
+
+	@Test
+	public void ignoresTheLimitOfAnInverterThatIsOff() throws Exception {
+		final var odtu = new MeterOpenDtuImpl();
+		final var httpTestBundle = DummyBridgeHttpBundle.of();
+		final var dummyCycleSubscriber = new DummyCycleSubscriber();
+		new ComponentTest(odtu) //
+				.addReference("httpBridgeFactory", httpTestBundle.factory()) //
+				.addReference("httpBridgeCycleServiceDefinition",
+						new HttpBridgeCycleServiceDefinition(dummyCycleSubscriber)) //
+				.addReference("timedata", new DummyTimedata("timedata0")) //
+				.activate(MyConfig.create() //
+						.setId("meterOpenDTU0") //
+						.setIp("127.0.0.1") //
+						.setPhase(SinglePhase.L1) //
+						.setType(PRODUCTION) //
+						.setSerialNumber("1234567890") //
+						.setControlLimit(true) //
+						.setPassword("secret") //
+						.build()) //
+				.next(new TestCase("Off at night: no limit known, nothing sent") //
+						.onBeforeProcessImage(() -> {
+							httpTestBundle.forceNextSuccessfulResult(HttpResponse.ok(LIVEDATA_AT_NIGHT));
+							dummyCycleSubscriber.triggerNextCycle();
+						}) //
+						.output(ManagedSymmetricPvInverter.ChannelId.MAX_ACTIVE_POWER, null) //
+						.outputReadValue(ManagedSymmetricPvInverter.ChannelId.ACTIVE_POWER_LIMIT, null)) //
+				.deactivate();
+	}
 }

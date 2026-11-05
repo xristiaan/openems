@@ -1,80 +1,94 @@
 package io.openems.edge.meter.acrel;
 
-import org.osgi.service.cm.ConfigurationAdmin;
+import static io.openems.edge.bridge.modbus.api.ElementToChannelConverter.SCALE_FACTOR_3;
+import static org.osgi.service.component.annotations.ConfigurationPolicy.REQUIRE;
+import static org.osgi.service.component.annotations.ReferenceCardinality.MANDATORY;
+import static org.osgi.service.component.annotations.ReferencePolicy.STATIC;
+import static org.osgi.service.component.annotations.ReferencePolicyOption.GREEDY;
+
 import org.osgi.service.component.ComponentContext;
 import org.osgi.service.component.annotations.Activate;
 import org.osgi.service.component.annotations.Component;
-import org.osgi.service.component.annotations.ConfigurationPolicy;
 import org.osgi.service.component.annotations.Deactivate;
 import org.osgi.service.component.annotations.Reference;
-import org.osgi.service.component.annotations.ReferenceCardinality;
-import org.osgi.service.component.annotations.ReferencePolicy;
-import org.osgi.service.component.annotations.ReferencePolicyOption;
 import org.osgi.service.metatype.annotations.Designate;
 
 import io.openems.common.exceptions.OpenemsException;
+import io.openems.common.referencetarget.GenerateTargetsFromReferences;
 import io.openems.common.types.MeterType;
 import io.openems.edge.bridge.modbus.api.AbstractOpenemsModbusComponent;
 import io.openems.edge.bridge.modbus.api.BridgeModbus;
+import io.openems.edge.bridge.modbus.api.ElementToChannelConverter;
 import io.openems.edge.bridge.modbus.api.ModbusComponent;
 import io.openems.edge.bridge.modbus.api.ModbusProtocol;
-import io.openems.edge.bridge.modbus.api.ElementToChannelConverter;
-import io.openems.edge.bridge.modbus.api.element.UnsignedDoublewordElement;
-import io.openems.edge.bridge.modbus.api.element.UnsignedWordElement;
+import io.openems.edge.bridge.modbus.api.element.DummyRegisterElement;
+import io.openems.edge.bridge.modbus.api.element.FloatDoublewordElement;
 import io.openems.edge.bridge.modbus.api.task.FC3ReadRegistersTask;
 import io.openems.edge.common.component.OpenemsComponent;
 import io.openems.edge.common.taskmanager.Priority;
 import io.openems.edge.meter.api.ElectricityMeter;
 
 /**
- * Acrel DTSD1352-4S three-phase Modbus-RTU energy meter.
+ * One measuring channel of the Acrel DTSD1352-4S four-channel three-phase
+ * meter, over Modbus RTU.
  *
  * <p>
- * Register map sourced from the publicly available DTSD1352-C installation
- * manual (the "-4S" variant's register map has NOT been separately confirmed
- * — verify against the actual device or its specific manual once hardware is
- * available). Only registers actually located in the accessible manual pages
- * are mapped below; everything else is left as an explicit TODO rather than
- * guessed. See raspberry-pi/openems-meter-acrel/README.md for the full list
- * of open items (scaling factors, missing power/power-factor registers,
- * possible off-by-one address conventions).
- * </p>
+ * Register map confirmed on the meter (2026-11-04): every value is a big-endian
+ * float32 in V, A, Hz, W and var. Each channel has a block of 0x56 registers,
+ * CH1 starting at 0x100. The meter measures power flowing towards the load as
+ * positive; a production channel is inverted so it reports production as
+ * positive, the OpenEMS convention. Energy (kWh) registers are not mapped yet:
+ * their addresses are still unknown.
  */
 @Designate(ocd = Config.class, factory = true)
-@Component(
-		name = "Meter.Acrel.Dtsd1352",
-		immediate = true,
-		configurationPolicy = ConfigurationPolicy.REQUIRE
-)
+@Component(//
+		name = "Meter.Acrel.Dtsd1352", //
+		immediate = true, //
+		configurationPolicy = REQUIRE)
+@GenerateTargetsFromReferences("Modbus")
 public class MeterAcrelImpl extends AbstractOpenemsModbusComponent
-		implements ElectricityMeter, OpenemsComponent, ModbusComponent {
+		implements ElectricityMeter, ModbusComponent, OpenemsComponent {
 
-	@Reference
-	private ConfigurationAdmin cm;
+	/** Address of CH1's block. */
+	static final int FIRST_BLOCK = 0x100;
+	/** Registers between two channels' blocks. */
+	static final int BLOCK_SIZE = 0x56;
 
-	@Reference(policy = ReferencePolicy.STATIC, policyOption = ReferencePolicyOption.GREEDY,
-			cardinality = ReferenceCardinality.MANDATORY)
+	@Override
+	@Reference(policy = STATIC, policyOption = GREEDY, cardinality = MANDATORY, //
+			target = "(&(id=${config.modbus_id})(enabled=true))")
 	protected void setModbus(BridgeModbus modbus) {
 		super.setModbus(modbus);
 	}
 
-	private Config config = null;
+	private MeterType meterType = MeterType.GRID;
+	private int channel = 1;
+	private int ctTurns = 1;
+	private boolean invert = false;
 
 	public MeterAcrelImpl() {
-		super(
-				OpenemsComponent.ChannelId.values(),
-				ModbusComponent.ChannelId.values(),
-				ElectricityMeter.ChannelId.values()
+		super(//
+				OpenemsComponent.ChannelId.values(), //
+				ModbusComponent.ChannelId.values(), //
+				ElectricityMeter.ChannelId.values() //
 		);
+		ElectricityMeter.calculateSumCurrentFromPhases(this);
+		ElectricityMeter.calculateAverageVoltageFromPhases(this);
 	}
 
 	@Activate
 	private void activate(ComponentContext context, Config config) throws OpenemsException {
-		if (super.activate(context, config.id(), config.alias(), config.enabled(), config.modbusUnitId(), this.cm,
-				"Modbus", config.modbus_id())) {
-			return;
+		if (config.channel() < 1 || config.channel() > 4) {
+			throw new OpenemsException("Channel must be 1-4, not " + config.channel());
 		}
-		this.config = config;
+		if (config.ctTurns() < 1) {
+			throw new OpenemsException("CT turns must be at least 1, not " + config.ctTurns());
+		}
+		this.meterType = config.type();
+		this.channel = config.channel();
+		this.ctTurns = config.ctTurns();
+		this.invert = config.invert();
+		super.activate(context, config.id(), config.alias(), config.enabled(), config.modbusUnitId());
 	}
 
 	@Override
@@ -85,89 +99,69 @@ public class MeterAcrelImpl extends AbstractOpenemsModbusComponent
 
 	@Override
 	public MeterType getMeterType() {
-		return this.config.type();
+		return this.meterType;
+	}
+
+	/**
+	 * The first register of a channel's block.
+	 *
+	 * @param channel 1-4
+	 * @return the address
+	 */
+	static int blockStart(int channel) {
+		return FIRST_BLOCK + (channel - 1) * BLOCK_SIZE;
+	}
+
+	/**
+	 * The factor from the meter's power reading to OpenEMS's: the meter counts
+	 * power towards the load as positive, OpenEMS counts production as positive on
+	 * a production meter. Divided by the CT turns.
+	 *
+	 * @param meterType the meter type
+	 * @param invert    the quick fix for CTs fitted the wrong way round
+	 * @param ctTurns   the CT turns
+	 * @return the factor
+	 */
+	static double powerFactor(MeterType meterType, boolean invert, int ctTurns) {
+		var production = meterType == MeterType.PRODUCTION || meterType == MeterType.PRODUCTION_AND_CONSUMPTION;
+		var sign = production != invert ? -1 : 1;
+		return (double) sign / ctTurns;
+	}
+
+	private static ElementToChannelConverter times(double factor) {
+		return new ElementToChannelConverter(value -> value == null //
+				? null //
+				: Math.round(((Number) value).doubleValue() * factor));
 	}
 
 	@Override
 	protected ModbusProtocol defineModbusProtocol() {
-		return new ModbusProtocol(this,
-				// Phase voltages, 0060H-0062H (decimal 96-98) — CONFIRMED addresses from the
-				// manual, 1 register (16-bit) each. Resolution/scale NOT confirmed — assuming
-				// 0.1V per unit (common for this meter family) and converting to the
-				// ElectricityMeter Nature's MILLIVOLT unit accordingly (register * 100).
-				// VERIFY against real hardware before trusting these values.
-				new FC3ReadRegistersTask(96, Priority.HIGH,
-						m(ElectricityMeter.ChannelId.VOLTAGE_L1, new UnsignedWordElement(96),
-								new ElementToChannelConverter(value -> scale(value, 100))),
-						m(ElectricityMeter.ChannelId.VOLTAGE_L2, new UnsignedWordElement(97),
-								new ElementToChannelConverter(value -> scale(value, 100))),
-						m(ElectricityMeter.ChannelId.VOLTAGE_L3, new UnsignedWordElement(98),
-								new ElementToChannelConverter(value -> scale(value, 100))),
-						// Phase currents, 0063H-0065H (decimal 99-101) — CONFIRMED addresses.
-						// Resolution NOT confirmed — assuming 0.001A per unit (i.e. register
-						// value already equals milliamps, the ElectricityMeter Nature's unit),
-						// so no scaling is applied here. VERIFY against real hardware.
-						m(ElectricityMeter.ChannelId.CURRENT_L1, new UnsignedWordElement(99)),
-						m(ElectricityMeter.ChannelId.CURRENT_L2, new UnsignedWordElement(100)),
-						m(ElectricityMeter.ChannelId.CURRENT_L3, new UnsignedWordElement(101))
-				),
-				// Frequency, 0077H (decimal 119) — CONFIRMED address, 1 register. Resolution
-				// NOT confirmed — assuming 0.01Hz per unit, converting to the Nature's
-				// MILLIHERTZ unit (register * 10). VERIFY against real hardware.
-				new FC3ReadRegistersTask(119, Priority.LOW,
-						m(ElectricityMeter.ChannelId.FREQUENCY, new UnsignedWordElement(119),
-								new ElementToChannelConverter(value -> scale(value, 10)))
-				),
-				// Forward (import) active total energy, 000AH (decimal 10) — CONFIRMED address,
-				// 2 registers (32-bit). Data type (integer vs. float) and scale NOT confirmed —
-				// assuming an unsigned 32-bit integer in units of 0.01 kWh, converting to the
-				// Nature's CUMULATED_WATT_HOURS unit (register * 10). "Forward" is assumed to
-				// mean energy imported from the grid (= consumption) — reasonable given the
-				// terminology, but not explicitly confirmed against OpenEMS's own convention.
-				// VERIFY against real hardware.
-				new FC3ReadRegistersTask(10, Priority.LOW,
-						m(ElectricityMeter.ChannelId.ACTIVE_CONSUMPTION_ENERGY,
-								new UnsignedDoublewordElement(10),
-								new ElementToChannelConverter(value -> scale(value, 10)))
-				),
-				// Reversing (export) active total energy, 0014H (decimal 20) — same caveats as
-				// above. "Reversing" is assumed to mean energy exported to the grid
-				// (= production, from this grid meter's perspective).
-				new FC3ReadRegistersTask(20, Priority.LOW,
-						m(ElectricityMeter.ChannelId.ACTIVE_PRODUCTION_ENERGY,
-								new UnsignedDoublewordElement(20),
-								new ElementToChannelConverter(value -> scale(value, 10)))
-				)
-
-		// TODO: ACTIVE_POWER / ACTIVE_POWER_L1-L3, REACTIVE_POWER / REACTIVE_POWER_L1-L3
-		// — register addresses not located in the accessible manual pages (checked the
-		// full instantaneous-parameter section, registers 0066H-0076H are marked
-		// "Reserve"). Needs either the complete manual or on-hardware Modbus scanning to
-		// find the correct addresses before these channels can be mapped.
-		);
-	}
-
-	/**
-	 * Placeholder for the register-to-channel scaling assumptions documented above
-	 * — deliberately a plain multiply, not one of OpenEMS's ElementToChannelConverter
-	 * SCALE_FACTOR_* constants, so the actual arithmetic and its direction (multiply,
-	 * not divide) is explicit and easy to correct once verified, rather than resting
-	 * on a remembered enum convention that wasn't independently confirmed.
-	 *
-	 * @param value  the raw register value
-	 * @param factor the scaling factor to multiply by
-	 * @return the scaled value, or null if value was null
-	 */
-	private static Object scale(Object value, int factor) {
-		if (value == null) {
-			return null;
-		}
-		return ((Number) value).longValue() * factor;
+		var a = blockStart(this.channel);
+		var current = times(1000.0 / this.ctTurns); // A to mA
+		var power = times(powerFactor(this.meterType, this.invert, this.ctTurns));
+		return new ModbusProtocol(this, //
+				new FC3ReadRegistersTask(a, Priority.HIGH, //
+						m(ElectricityMeter.ChannelId.VOLTAGE_L1, new FloatDoublewordElement(a), SCALE_FACTOR_3), //
+						m(ElectricityMeter.ChannelId.VOLTAGE_L2, new FloatDoublewordElement(a + 0x02), SCALE_FACTOR_3), //
+						m(ElectricityMeter.ChannelId.VOLTAGE_L3, new FloatDoublewordElement(a + 0x04), SCALE_FACTOR_3), //
+						new DummyRegisterElement(a + 0x06, a + 0x0B), // line voltages
+						m(ElectricityMeter.ChannelId.FREQUENCY, new FloatDoublewordElement(a + 0x0C), SCALE_FACTOR_3), //
+						m(ElectricityMeter.ChannelId.CURRENT_L1, new FloatDoublewordElement(a + 0x0E), current), //
+						m(ElectricityMeter.ChannelId.CURRENT_L2, new FloatDoublewordElement(a + 0x10), current), //
+						m(ElectricityMeter.ChannelId.CURRENT_L3, new FloatDoublewordElement(a + 0x12), current), //
+						new DummyRegisterElement(a + 0x14, a + 0x15), // zero-sequence current
+						m(ElectricityMeter.ChannelId.ACTIVE_POWER_L1, new FloatDoublewordElement(a + 0x16), power), //
+						m(ElectricityMeter.ChannelId.ACTIVE_POWER_L2, new FloatDoublewordElement(a + 0x18), power), //
+						m(ElectricityMeter.ChannelId.ACTIVE_POWER_L3, new FloatDoublewordElement(a + 0x1A), power), //
+						m(ElectricityMeter.ChannelId.ACTIVE_POWER, new FloatDoublewordElement(a + 0x1C), power), //
+						m(ElectricityMeter.ChannelId.REACTIVE_POWER_L1, new FloatDoublewordElement(a + 0x1E), power), //
+						m(ElectricityMeter.ChannelId.REACTIVE_POWER_L2, new FloatDoublewordElement(a + 0x20), power), //
+						m(ElectricityMeter.ChannelId.REACTIVE_POWER_L3, new FloatDoublewordElement(a + 0x22), power), //
+						m(ElectricityMeter.ChannelId.REACTIVE_POWER, new FloatDoublewordElement(a + 0x24), power)));
 	}
 
 	@Override
 	public String debugLog() {
-		return "L1:" + this.getVoltageL1().asString() + " L2:" + this.getVoltageL2().asString()
-				+ " L3:" + this.getVoltageL3().asString();
+		return "CH" + this.channel + " L:" + this.getActivePower().asString();
 	}
 }
