@@ -1,10 +1,12 @@
 package io.openems.edge.meter.acrel;
 
-import static io.openems.edge.bridge.modbus.api.ElementToChannelConverter.SCALE_FACTOR_3;
 import static org.osgi.service.component.annotations.ConfigurationPolicy.REQUIRE;
 import static org.osgi.service.component.annotations.ReferenceCardinality.MANDATORY;
 import static org.osgi.service.component.annotations.ReferencePolicy.STATIC;
 import static org.osgi.service.component.annotations.ReferencePolicyOption.GREEDY;
+
+import java.util.List;
+import java.util.stream.Collectors;
 
 import org.osgi.service.component.ComponentContext;
 import org.osgi.service.component.annotations.Activate;
@@ -18,27 +20,31 @@ import io.openems.common.referencetarget.GenerateTargetsFromReferences;
 import io.openems.common.types.MeterType;
 import io.openems.edge.bridge.modbus.api.AbstractOpenemsModbusComponent;
 import io.openems.edge.bridge.modbus.api.BridgeModbus;
-import io.openems.edge.bridge.modbus.api.ElementToChannelConverter;
 import io.openems.edge.bridge.modbus.api.ModbusComponent;
 import io.openems.edge.bridge.modbus.api.ModbusProtocol;
 import io.openems.edge.bridge.modbus.api.element.DummyRegisterElement;
 import io.openems.edge.bridge.modbus.api.element.FloatDoublewordElement;
 import io.openems.edge.bridge.modbus.api.task.FC3ReadRegistersTask;
+import io.openems.edge.bridge.modbus.api.task.Task;
 import io.openems.edge.common.component.OpenemsComponent;
 import io.openems.edge.common.taskmanager.Priority;
+import io.openems.edge.common.type.Phase.SinglePhase;
 import io.openems.edge.meter.api.ElectricityMeter;
 
 /**
- * One measuring channel of the Acrel DTSD1352-4S four-channel three-phase
- * meter, over Modbus RTU.
+ * One measured device on the Acrel DTSD1352-4S four-channel three-phase meter,
+ * over Modbus RTU: any combination of the meter's current transformer inputs
+ * (see {@link Input}), e.g. CH1 A for a boiler or CH2 A-C for a heat pump.
  *
  * <p>
  * Register map confirmed on the meter (2026-11-04): every value is a big-endian
  * float32 in V, A, Hz, W and var. Each channel has a block of 0x56 registers,
  * CH1 starting at 0x100. The meter measures power flowing towards the load as
- * positive; a production channel is inverted so it reports production as
- * positive, the OpenEMS convention. Energy (kWh) registers are not mapped yet:
- * their addresses are still unknown.
+ * positive; a production device is inverted so it reports production as
+ * positive, the OpenEMS convention. Per grid phase, the inputs on that phase are
+ * added up; the totals are the sum of the phases, not the meter's channel
+ * totals. Energy (kWh) registers are not mapped yet: their addresses are still
+ * unknown.
  */
 @Designate(ocd = Config.class, factory = true)
 @Component(//
@@ -54,6 +60,32 @@ public class MeterAcrelImpl extends AbstractOpenemsModbusComponent
 	/** Registers between two channels' blocks. */
 	static final int BLOCK_SIZE = 0x56;
 
+	// Offsets in a channel's block; per phase, terminal A's value, B and C follow
+	// 2 apart
+	private static final int VOLTAGE = 0x00;
+	private static final int FREQUENCY = 0x0C;
+	private static final int CURRENT = 0x0E;
+	private static final int ACTIVE_POWER = 0x16;
+	private static final int REACTIVE_POWER = 0x1E;
+	private static final int READ_LENGTH = 0x24;
+
+	private static final ElectricityMeter.ChannelId[] VOLTAGE_CHANNELS = { //
+			ElectricityMeter.ChannelId.VOLTAGE_L1, //
+			ElectricityMeter.ChannelId.VOLTAGE_L2, //
+			ElectricityMeter.ChannelId.VOLTAGE_L3 };
+	private static final ElectricityMeter.ChannelId[] CURRENT_CHANNELS = { //
+			ElectricityMeter.ChannelId.CURRENT_L1, //
+			ElectricityMeter.ChannelId.CURRENT_L2, //
+			ElectricityMeter.ChannelId.CURRENT_L3 };
+	private static final ElectricityMeter.ChannelId[] ACTIVE_POWER_CHANNELS = { //
+			ElectricityMeter.ChannelId.ACTIVE_POWER_L1, //
+			ElectricityMeter.ChannelId.ACTIVE_POWER_L2, //
+			ElectricityMeter.ChannelId.ACTIVE_POWER_L3 };
+	private static final ElectricityMeter.ChannelId[] REACTIVE_POWER_CHANNELS = { //
+			ElectricityMeter.ChannelId.REACTIVE_POWER_L1, //
+			ElectricityMeter.ChannelId.REACTIVE_POWER_L2, //
+			ElectricityMeter.ChannelId.REACTIVE_POWER_L3 };
+
 	@Override
 	@Reference(policy = STATIC, policyOption = GREEDY, cardinality = MANDATORY, //
 			target = "(&(id=${config.modbus_id})(enabled=true))")
@@ -62,9 +94,11 @@ public class MeterAcrelImpl extends AbstractOpenemsModbusComponent
 	}
 
 	private MeterType meterType = MeterType.GRID;
-	private int channel = 1;
+	private List<Input> inputs = List.of();
 	private int ctTurns = 1;
 	private boolean invert = false;
+	// The meter's readings, by channel and offset in its block
+	private final Float[][] readings = new Float[5][READ_LENGTH];
 
 	public MeterAcrelImpl() {
 		super(//
@@ -72,20 +106,19 @@ public class MeterAcrelImpl extends AbstractOpenemsModbusComponent
 				ModbusComponent.ChannelId.values(), //
 				ElectricityMeter.ChannelId.values() //
 		);
+		ElectricityMeter.calculateSumActivePowerFromPhases(this);
+		ElectricityMeter.calculateSumReactivePowerFromPhases(this);
 		ElectricityMeter.calculateSumCurrentFromPhases(this);
 		ElectricityMeter.calculateAverageVoltageFromPhases(this);
 	}
 
 	@Activate
 	private void activate(ComponentContext context, Config config) throws OpenemsException {
-		if (config.channel() < 1 || config.channel() > 4) {
-			throw new OpenemsException("Channel must be 1-4, not " + config.channel());
-		}
 		if (config.ctTurns() < 1) {
 			throw new OpenemsException("CT turns must be at least 1, not " + config.ctTurns());
 		}
 		this.meterType = config.type();
-		this.channel = config.channel();
+		this.inputs = Input.parse(config.inputs());
 		this.ctTurns = config.ctTurns();
 		this.invert = config.invert();
 		super.activate(context, config.id(), config.alias(), config.enabled(), config.modbusUnitId());
@@ -128,40 +161,82 @@ public class MeterAcrelImpl extends AbstractOpenemsModbusComponent
 		return (double) sign / ctTurns;
 	}
 
-	private static ElementToChannelConverter times(double factor) {
-		return new ElementToChannelConverter(value -> value == null //
-				? null //
-				: Math.round(((Number) value).doubleValue() * factor));
-	}
-
 	@Override
 	protected ModbusProtocol defineModbusProtocol() {
-		var a = blockStart(this.channel);
-		var current = times(1000.0 / this.ctTurns); // A to mA
-		var power = times(powerFactor(this.meterType, this.invert, this.ctTurns));
-		return new ModbusProtocol(this, //
-				new FC3ReadRegistersTask(a, Priority.HIGH, //
-						m(ElectricityMeter.ChannelId.VOLTAGE_L1, new FloatDoublewordElement(a), SCALE_FACTOR_3), //
-						m(ElectricityMeter.ChannelId.VOLTAGE_L2, new FloatDoublewordElement(a + 0x02), SCALE_FACTOR_3), //
-						m(ElectricityMeter.ChannelId.VOLTAGE_L3, new FloatDoublewordElement(a + 0x04), SCALE_FACTOR_3), //
-						new DummyRegisterElement(a + 0x06, a + 0x0B), // line voltages
-						m(ElectricityMeter.ChannelId.FREQUENCY, new FloatDoublewordElement(a + 0x0C), SCALE_FACTOR_3), //
-						m(ElectricityMeter.ChannelId.CURRENT_L1, new FloatDoublewordElement(a + 0x0E), current), //
-						m(ElectricityMeter.ChannelId.CURRENT_L2, new FloatDoublewordElement(a + 0x10), current), //
-						m(ElectricityMeter.ChannelId.CURRENT_L3, new FloatDoublewordElement(a + 0x12), current), //
-						new DummyRegisterElement(a + 0x14, a + 0x15), // zero-sequence current
-						m(ElectricityMeter.ChannelId.ACTIVE_POWER_L1, new FloatDoublewordElement(a + 0x16), power), //
-						m(ElectricityMeter.ChannelId.ACTIVE_POWER_L2, new FloatDoublewordElement(a + 0x18), power), //
-						m(ElectricityMeter.ChannelId.ACTIVE_POWER_L3, new FloatDoublewordElement(a + 0x1A), power), //
-						m(ElectricityMeter.ChannelId.ACTIVE_POWER, new FloatDoublewordElement(a + 0x1C), power), //
-						m(ElectricityMeter.ChannelId.REACTIVE_POWER_L1, new FloatDoublewordElement(a + 0x1E), power), //
-						m(ElectricityMeter.ChannelId.REACTIVE_POWER_L2, new FloatDoublewordElement(a + 0x20), power), //
-						m(ElectricityMeter.ChannelId.REACTIVE_POWER_L3, new FloatDoublewordElement(a + 0x22), power), //
-						m(ElectricityMeter.ChannelId.REACTIVE_POWER, new FloatDoublewordElement(a + 0x24), power)));
+		// One read per channel in use, of all three terminals
+		var tasks = this.inputs.stream() //
+				.map(Input::channel) //
+				.distinct() //
+				.map(this::readTask) //
+				.toArray(Task[]::new);
+		return new ModbusProtocol(this, tasks);
+	}
+
+	private Task readTask(int channel) {
+		var a = blockStart(channel);
+		return new FC3ReadRegistersTask(a, Priority.HIGH, //
+				this.reading(channel, VOLTAGE), //
+				this.reading(channel, VOLTAGE + 2), //
+				this.reading(channel, VOLTAGE + 4), //
+				new DummyRegisterElement(a + 0x06, a + 0x0B), // line voltages
+				this.reading(channel, FREQUENCY), //
+				this.reading(channel, CURRENT), //
+				this.reading(channel, CURRENT + 2), //
+				this.reading(channel, CURRENT + 4), //
+				new DummyRegisterElement(a + 0x14, a + 0x15), // zero-sequence current
+				this.reading(channel, ACTIVE_POWER), //
+				this.reading(channel, ACTIVE_POWER + 2), //
+				this.reading(channel, ACTIVE_POWER + 4), //
+				new DummyRegisterElement(a + 0x1C, a + 0x1D), // the channel's total active power
+				this.reading(channel, REACTIVE_POWER), //
+				this.reading(channel, REACTIVE_POWER + 2), //
+				this.reading(channel, REACTIVE_POWER + 4));
+	}
+
+	private FloatDoublewordElement reading(int channel, int offset) {
+		return new FloatDoublewordElement(blockStart(channel) + offset).onUpdateCallback(value -> {
+			synchronized (this.readings) {
+				this.readings[channel][offset] = value;
+				this.update();
+			}
+		});
+	}
+
+	// Sums one quantity over the inputs, scaled; null if a reading is missing
+	private Integer sum(List<Input> inputs, int offset, double factor) {
+		var sum = 0.0;
+		for (var input : inputs) {
+			var value = this.readings[input.channel()][offset + 2 * input.terminal()];
+			if (value == null) {
+				return null;
+			}
+			sum += value;
+		}
+		return (int) Math.round(sum * factor);
+	}
+
+	private void update() {
+		var power = powerFactor(this.meterType, this.invert, this.ctTurns);
+		for (var phase : SinglePhase.values()) {
+			var on = this.inputs.stream().filter(input -> input.phase() == phase).toList();
+			if (on.isEmpty()) {
+				continue; // not measured: stays null
+			}
+			var i = phase.ordinal();
+			// Inputs on the same phase share its voltage: take the first
+			this.channel(VOLTAGE_CHANNELS[i]).setNextValue(this.sum(on.subList(0, 1), VOLTAGE, 1000));
+			this.channel(CURRENT_CHANNELS[i]).setNextValue(this.sum(on, CURRENT, 1000.0 / this.ctTurns));
+			this.channel(ACTIVE_POWER_CHANNELS[i]).setNextValue(this.sum(on, ACTIVE_POWER, power));
+			this.channel(REACTIVE_POWER_CHANNELS[i]).setNextValue(this.sum(on, REACTIVE_POWER, power));
+		}
+		var frequency = this.readings[this.inputs.get(0).channel()][FREQUENCY];
+		this._setFrequency(frequency == null ? null : Math.round(frequency * 1000));
 	}
 
 	@Override
 	public String debugLog() {
-		return "CH" + this.channel + " L:" + this.getActivePower().asString();
+		return this.inputs.stream() //
+				.map(Input::terminalName) //
+				.collect(Collectors.joining(",")) + " L:" + this.getActivePower().asString();
 	}
 }

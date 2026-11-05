@@ -9,7 +9,7 @@ public class MyConfig extends AbstractComponentConfig implements Config {
 	protected static class Builder {
 		private String id;
 		private String modbusId;
-		private int channel = 1;
+		private String inputs = "1A,1B,1C";
 		private MeterType type = MeterType.GRID;
 		private int ctTurns = 1;
 		private boolean invert;
@@ -27,8 +27,8 @@ public class MyConfig extends AbstractComponentConfig implements Config {
 			return this;
 		}
 
-		public Builder setChannel(int channel) {
-			this.channel = channel;
+		public Builder setInputs(String inputs) {
+			this.inputs = inputs;
 			return this;
 		}
 
@@ -69,8 +69,8 @@ public class MyConfig extends AbstractComponentConfig implements Config {
 	}
 
 	@Override
-	public int channel() {
-		return this.builder.channel;
+	public String inputs() {
+		return this.builder.inputs;
 	}
 
 	@Override
