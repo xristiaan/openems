@@ -2,10 +2,14 @@ package io.openems.edge.meter.opendtu;
 
 import static io.openems.common.types.MeterType.PRODUCTION;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNull;
+
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.junit.jupiter.api.Test;
 
 import io.openems.common.bridge.http.api.HttpResponse;
+import io.openems.common.bridge.http.api.UrlBuilder;
 import io.openems.common.bridge.http.dummy.DummyBridgeHttpBundle;
 import io.openems.common.channel.Level;
 import io.openems.edge.bridge.http.cycle.HttpBridgeCycleServiceDefinition;
@@ -119,7 +123,69 @@ public class MeterOpenDtuImplTest {
 						.output(ManagedSymmetricPvInverter.ChannelId.MAX_APPARENT_POWER, null) //
 						.output(ManagedSymmetricPvInverter.ChannelId.MAX_REACTIVE_POWER, null) //
 
-						.output(MeterOpenDtu.ChannelId.SLAVE_COMMUNICATION_FAILED, false)) //
+						.output(MeterOpenDtu.ChannelId.SLAVE_COMMUNICATION_FAILED, false) //
+						.output(MeterOpenDtu.ChannelId.LIMIT_WRITE_FAILED, false)) //
+				.deactivate();
+	}
+
+	private static final String LIVEDATA_AT_FULL_LIMIT = """
+			{
+			   "inverters":[
+			      {
+			         "serial":"1234567890",
+			         "limit_relative":100,
+			         "limit_absolute":1600,
+			         "AC":{
+			            "0":{
+			               "Power":{"v":400,"u":"W","d":1},
+			               "Voltage":{"v":230,"u":"V","d":1},
+			               "Current":{"v":1.74,"u":"A","d":2}
+			            }
+			         }
+			      }
+			   ]
+			}
+			""";
+
+	@Test
+	public void controlsTheLimit() throws Exception {
+		final var odtu = new MeterOpenDtuImpl();
+		final var httpTestBundle = DummyBridgeHttpBundle.of();
+		final var dummyCycleSubscriber = new DummyCycleSubscriber();
+		final var sent = new AtomicReference<String>();
+		new ComponentTest(odtu) //
+				.addReference("httpBridgeFactory", httpTestBundle.factory()) //
+				.addReference("httpBridgeCycleServiceDefinition",
+						new HttpBridgeCycleServiceDefinition(dummyCycleSubscriber)) //
+				.addReference("timedata", new DummyTimedata("timedata0")) //
+				.activate(MyConfig.create() //
+						.setId("meterOpenDTU0") //
+						.setIp("127.0.0.1") //
+						.setPhase(SinglePhase.L1) //
+						.setType(PRODUCTION) //
+						.setSerialNumber("1234567890") //
+						.setControlLimit(true) //
+						.setPassword("secret") //
+						.build()) //
+				.next(new TestCase("No controller and the inverter is at 100 %: nothing to send") //
+						.onBeforeProcessImage(() -> {
+							httpTestBundle.forceNextSuccessfulResult(HttpResponse.ok(LIVEDATA_AT_FULL_LIMIT));
+							dummyCycleSubscriber.triggerNextCycle();
+						}) //
+						.onAfterWriteCallbacks(() -> assertNull(sent.get())) //
+						.output(ManagedSymmetricPvInverter.ChannelId.MAX_ACTIVE_POWER, 1600) //
+						.outputReadValue(ManagedSymmetricPvInverter.ChannelId.ACTIVE_POWER_LIMIT, 1600)) //
+				.next(new TestCase("A controller asks for 800 W: 50 % goes out") //
+						.onBeforeWriteCallbacks(() -> {
+							httpTestBundle.fetcher().addSingleUseEndpointHandler(endpoint -> {
+								sent.set(UrlBuilder.decodeFormUrlencodedBody(endpoint.body()).get("data"));
+								return HttpResponse.ok("{\"type\":\"success\",\"message\":\"Settings saved!\"}");
+							});
+							odtu.setActivePowerLimit(800);
+						}) //
+						.onAfterWriteCallbacks(() -> assertEquals(
+								"{\"serial\":\"1234567890\",\"limit_type\":1,\"limit_value\":50.0}", sent.get())) //
+						.output(MeterOpenDtu.ChannelId.LIMIT_WRITE_FAILED, false)) //
 				.deactivate();
 	}
 }

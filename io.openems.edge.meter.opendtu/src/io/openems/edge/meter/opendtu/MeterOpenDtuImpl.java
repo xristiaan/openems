@@ -3,12 +3,14 @@ package io.openems.edge.meter.opendtu;
 import static io.openems.common.utils.JsonUtils.getAsFloat;
 import static io.openems.common.utils.JsonUtils.getAsJsonArray;
 import static io.openems.common.utils.JsonUtils.getAsJsonObject;
+import static io.openems.common.utils.JsonUtils.getAsOptionalDouble;
 import static io.openems.edge.common.channel.ChannelUtils.setValue;
 import static java.lang.Math.round;
 import static org.osgi.service.component.annotations.ReferenceCardinality.MANDATORY;
 
 import java.security.KeyManagementException;
 import java.security.NoSuchAlgorithmException;
+import java.time.Instant;
 
 import org.osgi.service.component.ComponentContext;
 import org.osgi.service.component.annotations.Activate;
@@ -67,8 +69,13 @@ public class MeterOpenDtuImpl extends AbstractOpenemsComponent implements MeterO
 
 	private final Logger log = LoggerFactory.getLogger(MeterOpenDtuImpl.class);
 
+	private final LimitControl limitControl = new LimitControl();
+
 	private String baseUrl;
 	private Config config;
+	// From the last livedata response; written by the HTTP thread
+	private volatile Integer maxPower;
+	private volatile Double reportedLimit;
 
 	@Reference(cardinality = MANDATORY)
 	private BridgeHttpFactory httpBridgeFactory;
@@ -134,7 +141,37 @@ public class MeterOpenDtuImpl extends AbstractOpenemsComponent implements MeterO
 		case EdgeEventConstants.TOPIC_CYCLE_AFTER_PROCESS_IMAGE: //
 			this.calculateEnergy();
 			break;
+		case EdgeEventConstants.TOPIC_CYCLE_EXECUTE_WRITE: //
+			this.applyLimit();
+			break;
 		}
+	}
+
+	private void applyLimit() {
+		var requested = this.getActivePowerLimitChannel().getNextWriteValueAndReset();
+		var maxPower = this.maxPower;
+		if (!this.config.controlLimit() || maxPower == null) {
+			return;
+		}
+		var target = LimitControl.toRelative(requested.orElse(null), maxPower);
+		var now = Instant.now();
+		if (!this.limitControl.shouldSend(target, this.reportedLimit, now)) {
+			return;
+		}
+		this.limitControl.sending(target, now);
+		this.logInfo(this.log, "Set power limit to " + target + " %");
+		var endpoint = LimitControl.request(this.baseUrl, this.config.serialNumber(), target,
+				this.config.username(), this.config.password());
+		this.httpBridge.request(endpoint).whenComplete((response, error) -> {
+			// OpenDTU answers {"type":"success",...} or e.g. {"type":"warning","message":...}
+			var body = response != null ? response.data() : null;
+			var success = error == null && body != null && body.contains("\"success\"");
+			if (!success) {
+				this.logWarn(this.log, "Setting the power limit failed: " + (error != null ? error.getMessage() : body));
+			}
+			this.limitControl.done(success);
+			setValue(this, MeterOpenDtu.ChannelId.LIMIT_WRITE_FAILED, !success);
+		});
 	}
 
 	private void processHttpResult(HttpResponse<JsonElement> result, Throwable error) {
@@ -143,6 +180,8 @@ public class MeterOpenDtuImpl extends AbstractOpenemsComponent implements MeterO
 		Integer power = null;
 		Integer voltage = null;
 		Integer current = null;
+		Integer limit = null;
+		Double limitRelative = null;
 
 		if (error != null) {
 			this.logDebug(this.log, error.getMessage());
@@ -159,6 +198,13 @@ public class MeterOpenDtuImpl extends AbstractOpenemsComponent implements MeterO
 					power = round(getAsFloat(getAsJsonObject(ac0, "Power"), "v"));
 					voltage = round(getAsFloat(getAsJsonObject(ac0, "Voltage"), "v") * 1000);
 					current = round(getAsFloat(getAsJsonObject(ac0, "Current"), "v") * 1000);
+
+					limitRelative = getAsOptionalDouble(inverter, "limit_relative").orElse(null);
+					limit = getAsOptionalDouble(inverter, "limit_absolute").map(Math::round).map(Long::intValue)
+							.orElse(null);
+					if (limit != null && limitRelative != null && limitRelative > 0) {
+						this.maxPower = (int) Math.round(limit * 100 / limitRelative);
+					}
 				}
 
 			} catch (OpenemsNamedException e) {
@@ -169,7 +215,10 @@ public class MeterOpenDtuImpl extends AbstractOpenemsComponent implements MeterO
 		this._setActivePower(power);
 		this._setCurrent(current);
 		this._setVoltage(voltage);
-
+		this.reportedLimit = limitRelative;
+		this._setActivePowerLimit(limit);
+		this._setMaxActivePower(this.maxPower);
+		this._setMaxApparentPower(this.maxPower);
 	}
 
 	/**

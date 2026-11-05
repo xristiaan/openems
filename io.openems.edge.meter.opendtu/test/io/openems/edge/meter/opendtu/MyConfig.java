@@ -13,6 +13,8 @@ public class MyConfig extends AbstractComponentConfig implements Config {
 		private String serialNumber;
 		private MeterType type;
 		private SinglePhase phase;
+		private boolean controlLimit = false;
+		private String password = "";
 
 		private Builder() {
 		}
@@ -39,6 +41,16 @@ public class MyConfig extends AbstractComponentConfig implements Config {
 
 		public Builder setPhase(SinglePhase phase) {
 			this.phase = phase;
+			return this;
+		}
+
+		public Builder setControlLimit(boolean controlLimit) {
+			this.controlLimit = controlLimit;
+			return this;
+		}
+
+		public Builder setPassword(String password) {
+			this.password = password;
 			return this;
 		}
 
@@ -76,5 +88,20 @@ public class MyConfig extends AbstractComponentConfig implements Config {
 	@Override
 	public String serialNumber() {
 		return this.builder.serialNumber;
+	}
+
+	@Override
+	public boolean controlLimit() {
+		return this.builder.controlLimit;
+	}
+
+	@Override
+	public String username() {
+		return "admin";
+	}
+
+	@Override
+	public String password() {
+		return this.builder.password;
 	}
 }

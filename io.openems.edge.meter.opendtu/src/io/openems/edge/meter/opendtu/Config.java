@@ -1,6 +1,7 @@
 package io.openems.edge.meter.opendtu;
 
 import org.osgi.service.metatype.annotations.AttributeDefinition;
+import org.osgi.service.metatype.annotations.AttributeType;
 import org.osgi.service.metatype.annotations.ObjectClassDefinition;
 
 import io.openems.edge.common.type.Phase.SinglePhase;
@@ -26,6 +27,15 @@ import io.openems.edge.common.type.Phase.SinglePhase;
 
 	@AttributeDefinition(name = "Inverter Serial Number", description = "Serial Number of the Inverter")
 	String serialNumber() default "";
+
+	@AttributeDefinition(name = "Control power limit?", description = "Sends the power limit to the inverter, as a non-persistent limit. Needs the OpenDTU admin login.")
+	boolean controlLimit() default false;
+
+	@AttributeDefinition(name = "Username", description = "The OpenDTU admin user")
+	String username() default "admin";
+
+	@AttributeDefinition(name = "Password", description = "The OpenDTU admin password", type = AttributeType.PASSWORD)
+	String password() default "";
 
 	String webconsole_configurationFactory_nameHint() default "Meter OpenDTU [{id}]";
 

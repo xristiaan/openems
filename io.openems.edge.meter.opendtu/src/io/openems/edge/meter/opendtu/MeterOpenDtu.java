@@ -23,7 +23,18 @@ public interface MeterOpenDtu extends ElectricityMeter, SinglePhaseMeter, Openem
 		 * </ul>
 		 */
 		SLAVE_COMMUNICATION_FAILED(Doc.of(Level.FAULT)//
-				.text("Communication with slave device failed."));
+				.text("Communication with slave device failed.")), //
+
+		/**
+		 * The OpenDTU didn't accept the last power limit.
+		 *
+		 * <ul>
+		 * <li>Interface: MeterOpenDtu
+		 * <li>Type: State
+		 * </ul>
+		 */
+		LIMIT_WRITE_FAILED(Doc.of(Level.WARNING) //
+				.text("Setting the power limit failed."));
 
 		private final Doc doc;
 
