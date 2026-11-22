@@ -7,7 +7,7 @@ import io.openems.edge.predictor.api.prediction.LogVerbosity;
 
 @ObjectClassDefinition(//
 		name = "Predictor Replay", //
-		description = "Predicts PV production from the forecast of recorded test days (test-data/days/*.json), replayed against the real clock.")
+		description = "Predicts PV production or the outdoor temperature from the forecast of recorded test days (test-data/days/*.json), replayed against the real clock.")
 @interface Config {
 
 	@AttributeDefinition(name = "Component-ID", description = "Unique ID of this Component")
@@ -19,7 +19,10 @@ import io.openems.edge.predictor.api.prediction.LogVerbosity;
 	@AttributeDefinition(name = "Is enabled?", description = "Is this Component enabled?")
 	boolean enabled() default true;
 
-	@AttributeDefinition(name = "Channel-Addresses", description = "Channels this Predictor predicts, e.g. 'pv0/ActivePower'.")
+	@AttributeDefinition(name = "Quantity", description = "What to predict: PV power in W, or the outdoor temperature in deci-degrees Celsius (like a Thermometer's Temperature).")
+	Quantity quantity() default Quantity.PV_POWER;
+
+	@AttributeDefinition(name = "Channel-Addresses", description = "Channels this Predictor predicts, e.g. 'pv0/ActivePower' or 'outdoor0/Temperature'.")
 	String[] channelAddresses() default { "pv0/ActivePower" };
 
 	@AttributeDefinition(name = "Test-day directory", description = "Directory holding the YYYY-MM-DD.json test days.")
@@ -31,7 +34,7 @@ import io.openems.edge.predictor.api.prediction.LogVerbosity;
 	@AttributeDefinition(name = "Time zone", description = "Local time zone of the test days.")
 	String timeZone() default "Europe/Amsterdam";
 
-	@AttributeDefinition(name = "Scale", description = "Multiplies the recorded PV values, e.g. to try another system size. Use the same value as the PV inverter.")
+	@AttributeDefinition(name = "Scale", description = "Multiplies the recorded PV values, e.g. to try another system size. Use the same value as the PV inverter. Not used for the temperature.")
 	double scale() default 1.0;
 
 	@AttributeDefinition(name = "Log-Verbosity", description = "The log verbosity.")

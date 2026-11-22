@@ -3,7 +3,9 @@ package io.openems.edge.meter.acrel;
 import static io.openems.common.types.MeterType.CONSUMPTION_METERED;
 import static io.openems.common.types.MeterType.GRID;
 import static io.openems.common.types.MeterType.PRODUCTION;
+import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import java.util.List;
@@ -162,5 +164,17 @@ public class MeterAcrelImplTest {
 		assertEquals(1.0, MeterAcrelImpl.powerFactor(PRODUCTION, true, 1), 0);
 		assertEquals(1.0, MeterAcrelImpl.powerFactor(MeterType.CONSUMPTION_METERED, false, 1), 0);
 		assertEquals(-1.0 / 3, MeterAcrelImpl.powerFactor(PRODUCTION, false, 3), 1e-9);
+	}
+
+	@Test
+	public void energyFlowsFollowTheSumConvention() {
+		// grid: buying counts as production energy (_sum's GridBuyActiveEnergy)
+		assertArrayEquals(new Integer[] { 2000, 0 }, MeterAcrelImpl.energyFlows(GRID, 2000));
+		assertArrayEquals(new Integer[] { 0, 1500 }, MeterAcrelImpl.energyFlows(GRID, -1500));
+		// production: producing is production energy
+		assertArrayEquals(new Integer[] { 3000, 0 }, MeterAcrelImpl.energyFlows(PRODUCTION, 3000));
+		// a consumer (heat pump, EV): consuming is consumption energy
+		assertArrayEquals(new Integer[] { 0, 2500 }, MeterAcrelImpl.energyFlows(CONSUMPTION_METERED, 2500));
+		assertNull(MeterAcrelImpl.energyFlows(CONSUMPTION_METERED, null));
 	}
 }

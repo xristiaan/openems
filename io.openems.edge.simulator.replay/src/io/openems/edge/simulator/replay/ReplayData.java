@@ -38,7 +38,19 @@ public class ReplayData {
 	 * One 15-minute slot of a test day. Fields are null where the test day has
 	 * no data.
 	 */
-	public record Slot(Double priceEurPerKwh, Integer pvForecastW, Integer pvActualW) {
+	public record Slot(Double priceEurPerKwh, Integer pvForecastW, Integer pvActualW, Double outdoorForecastC,
+			Double outdoorActualC) {
+
+		/**
+		 * A slot without outdoor temperatures.
+		 *
+		 * @param priceEurPerKwh the price
+		 * @param pvForecastW    the PV forecast
+		 * @param pvActualW      the PV actual
+		 */
+		public Slot(Double priceEurPerKwh, Integer pvForecastW, Integer pvActualW) {
+			this(priceEurPerKwh, pvForecastW, pvActualW, null, null);
+		}
 
 		/**
 		 * The PV production to simulate: the actual, else the forecast, else 0.
@@ -57,6 +69,25 @@ public class ReplayData {
 		 */
 		public int pvPredictedW() {
 			return this.pvForecastW != null ? this.pvForecastW : this.pvActualW != null ? this.pvActualW : 0;
+		}
+
+		/**
+		 * The outdoor temperature to simulate: the actual, else the forecast.
+		 *
+		 * @return the temperature in °C, null if the test day has none
+		 */
+		public Double outdoorNowC() {
+			return this.outdoorActualC != null ? this.outdoorActualC : this.outdoorForecastC;
+		}
+
+		/**
+		 * The outdoor temperature forecast to give the planner: the forecast, else
+		 * the actual.
+		 *
+		 * @return the temperature in °C, null if the test day has none
+		 */
+		public Double outdoorPredictedC() {
+			return this.outdoorForecastC != null ? this.outdoorForecastC : this.outdoorActualC;
 		}
 	}
 
@@ -123,7 +154,9 @@ public class ReplayData {
 			slots.add(new Slot(//
 					doubleOrNull(slot.get("priceEurPerKwh")), //
 					intOrNull(slot.get("pvForecastW")), //
-					intOrNull(slot.get("pvActualW"))));
+					intOrNull(slot.get("pvActualW")), //
+					doubleOrNull(slot.get("outdoorForecastC")), //
+					doubleOrNull(slot.get("outdoorActualC"))));
 		}
 		return slots;
 	}
@@ -134,6 +167,16 @@ public class ReplayData {
 
 	private static Integer intOrNull(JsonElement e) {
 		return e == null || e.isJsonNull() ? null : e.getAsInt();
+	}
+
+	/**
+	 * A temperature in °C as OpenEMS's deci-degrees Celsius.
+	 *
+	 * @param celsius the temperature in °C, or null
+	 * @return the temperature in dezidegree Celsius, or null
+	 */
+	public static Integer toDeciDegrees(Double celsius) {
+		return celsius == null ? null : (int) Math.round(celsius * 10);
 	}
 
 	/**

@@ -2,6 +2,8 @@ package io.openems.edge.meter.acrel;
 
 import static org.osgi.service.component.annotations.ConfigurationPolicy.REQUIRE;
 import static org.osgi.service.component.annotations.ReferenceCardinality.MANDATORY;
+import static org.osgi.service.component.annotations.ReferenceCardinality.OPTIONAL;
+import static org.osgi.service.component.annotations.ReferencePolicy.DYNAMIC;
 import static org.osgi.service.component.annotations.ReferencePolicy.STATIC;
 import static org.osgi.service.component.annotations.ReferencePolicyOption.GREEDY;
 
@@ -13,6 +15,9 @@ import org.osgi.service.component.annotations.Activate;
 import org.osgi.service.component.annotations.Component;
 import org.osgi.service.component.annotations.Deactivate;
 import org.osgi.service.component.annotations.Reference;
+import org.osgi.service.event.Event;
+import org.osgi.service.event.EventHandler;
+import org.osgi.service.event.propertytypes.EventTopics;
 import org.osgi.service.metatype.annotations.Designate;
 
 import io.openems.common.exceptions.OpenemsException;
@@ -27,9 +32,13 @@ import io.openems.edge.bridge.modbus.api.element.FloatDoublewordElement;
 import io.openems.edge.bridge.modbus.api.task.FC3ReadRegistersTask;
 import io.openems.edge.bridge.modbus.api.task.Task;
 import io.openems.edge.common.component.OpenemsComponent;
+import io.openems.edge.common.event.EdgeEventConstants;
 import io.openems.edge.common.taskmanager.Priority;
 import io.openems.edge.common.type.Phase.SinglePhase;
 import io.openems.edge.meter.api.ElectricityMeter;
+import io.openems.edge.timedata.api.Timedata;
+import io.openems.edge.timedata.api.TimedataProvider;
+import io.openems.edge.timedata.api.utils.CalculateEnergyFromPower;
 
 /**
  * One measured device on the Acrel DTSD1352-4S four-channel three-phase meter,
@@ -43,17 +52,21 @@ import io.openems.edge.meter.api.ElectricityMeter;
  * positive; a production device is inverted so it reports production as
  * positive, the OpenEMS convention. Per grid phase, the inputs on that phase are
  * added up; the totals are the sum of the phases, not the meter's channel
- * totals. Energy (kWh) registers are not mapped yet: their addresses are still
- * unknown.
+ * totals. Energy (kWh) registers are not mapped yet (their addresses are still
+ * unknown): the energy is calculated from the active power every cycle, and
+ * kept across restarts through Timedata (see {@link #energyFlows}).
  */
 @Designate(ocd = Config.class, factory = true)
 @Component(//
 		name = "Meter.Acrel.Dtsd1352", //
 		immediate = true, //
 		configurationPolicy = REQUIRE)
+@EventTopics({ //
+		EdgeEventConstants.TOPIC_CYCLE_AFTER_PROCESS_IMAGE //
+})
 @GenerateTargetsFromReferences("Modbus")
 public class MeterAcrelImpl extends AbstractOpenemsModbusComponent
-		implements ElectricityMeter, ModbusComponent, OpenemsComponent {
+		implements ElectricityMeter, ModbusComponent, OpenemsComponent, TimedataProvider, EventHandler {
 
 	/** Address of CH1's block. */
 	static final int FIRST_BLOCK = 0x100;
@@ -92,6 +105,14 @@ public class MeterAcrelImpl extends AbstractOpenemsModbusComponent
 	protected void setModbus(BridgeModbus modbus) {
 		super.setModbus(modbus);
 	}
+
+	@Reference(policy = DYNAMIC, policyOption = GREEDY, cardinality = OPTIONAL)
+	private volatile Timedata timedata = null;
+
+	private final CalculateEnergyFromPower calculateProductionEnergy = new CalculateEnergyFromPower(this,
+			ElectricityMeter.ChannelId.ACTIVE_PRODUCTION_ENERGY);
+	private final CalculateEnergyFromPower calculateConsumptionEnergy = new CalculateEnergyFromPower(this,
+			ElectricityMeter.ChannelId.ACTIVE_CONSUMPTION_ENERGY);
 
 	private MeterType meterType = MeterType.GRID;
 	private List<Input> inputs = List.of();
@@ -133,6 +154,48 @@ public class MeterAcrelImpl extends AbstractOpenemsModbusComponent
 	@Override
 	public MeterType getMeterType() {
 		return this.meterType;
+	}
+
+	@Override
+	public Timedata getTimedata() {
+		return this.timedata;
+	}
+
+	@Override
+	public void handleEvent(Event event) {
+		if (!this.isEnabled()) {
+			return;
+		}
+		if (EdgeEventConstants.TOPIC_CYCLE_AFTER_PROCESS_IMAGE.equals(event.getTopic())) {
+			var flows = energyFlows(this.meterType, this.getActivePower().get());
+			this.calculateProductionEnergy.update(flows == null ? null : flows[0]);
+			this.calculateConsumptionEnergy.update(flows == null ? null : flows[1]);
+		}
+	}
+
+	/**
+	 * Splits the active power into what counts as production energy and as
+	 * consumption energy, the way OpenEMS's {@code _sum} reads them: on a grid
+	 * meter production is buying from the grid and consumption selling to it; on a
+	 * production meter production is production. On a consumption meter
+	 * (positive power is consumption) consumption is consumption.
+	 *
+	 * @param meterType   the meter type
+	 * @param activePower the active power in W, or null
+	 * @return {production W, consumption W}, both &ge; 0; null if the power is
+	 *         unknown
+	 */
+	static Integer[] energyFlows(MeterType meterType, Integer activePower) {
+		if (activePower == null) {
+			return null;
+		}
+		var positive = Math.max(activePower, 0);
+		var negative = Math.max(-activePower, 0);
+		return switch (meterType) {
+		case CONSUMPTION_METERED, MANAGED_CONSUMPTION_METERED, CONSUMPTION_NOT_METERED -> //
+			new Integer[] { negative, positive };
+		default -> new Integer[] { positive, negative };
+		};
 	}
 
 	/**

@@ -26,9 +26,10 @@ import io.openems.edge.predictor.api.prediction.Predictor;
 import io.openems.edge.simulator.replay.ReplayData;
 
 /**
- * The PV forecast of recorded test days, replayed against the real clock. A
- * slot without a recorded forecast predicts its recorded actual (a perfect
- * forecast), so test days fetched after they started still work.
+ * The PV or outdoor temperature forecast of recorded test days, replayed
+ * against the real clock. A slot without a recorded forecast predicts its
+ * recorded actual (a perfect forecast), so test days fetched after they
+ * started still work. A slot without any temperature predicts null.
  */
 @Designate(ocd = Config.class, factory = true)
 @Component(//
@@ -48,6 +49,7 @@ public class PredictorReplayImpl extends AbstractPredictor implements Predictor,
 
 	private ReplayData replay;
 	private double scale;
+	private Quantity quantity;
 
 	public PredictorReplayImpl() {
 		super(OpenemsComponent.ChannelId.values());
@@ -58,6 +60,7 @@ public class PredictorReplayImpl extends AbstractPredictor implements Predictor,
 		super.activate(context, config.id(), config.alias(), config.enabled(), config.logVerbosity(),
 				config.channelAddresses());
 		this.scale = config.scale();
+		this.quantity = config.quantity();
 		try {
 			var zone = ZoneId.of(config.timeZone());
 			var today = Instant.now(this.componentManager.getClock()).atZone(zone).toLocalDate();
@@ -86,14 +89,18 @@ public class PredictorReplayImpl extends AbstractPredictor implements Predictor,
 			return Prediction.EMPTY_PREDICTION;
 		}
 		var start = ReplayData.slotStart(Instant.now(this.componentManager.getClock()));
-		return Prediction.from(start, predictedW(replay, start, SLOTS, this.scale));
+		return Prediction.from(start, predicted(replay, start, SLOTS, this.quantity, this.scale));
 	}
 
-	static Integer[] predictedW(ReplayData replay, Instant start, int count, double scale) {
+	static Integer[] predicted(ReplayData replay, Instant start, int count, Quantity quantity, double scale) {
 		var slots = replay.slotsFrom(start, count);
 		var out = new Integer[count];
 		for (var i = 0; i < count; i++) {
-			out[i] = (int) Math.round(slots.get(i).pvPredictedW() * scale);
+			var slot = slots.get(i);
+			out[i] = switch (quantity) {
+			case PV_POWER -> (int) Math.round(slot.pvPredictedW() * scale);
+			case OUTDOOR_TEMPERATURE -> ReplayData.toDeciDegrees(slot.outdoorPredictedC());
+			};
 		}
 		return out;
 	}
