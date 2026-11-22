@@ -7,7 +7,7 @@ import io.openems.common.types.MeterType;
 
 @ObjectClassDefinition(//
 		name = "HVAC MQTT", //
-		description = "A heating / cooling device (air conditioner, heat pump zone) behind a platform bridge (Homey, Home Assistant): its state, room temperature and power arrive on an MQTT state topic. Read-only for now: written values are not sent to the device.")
+		description = "A heating / cooling device (air conditioner, heat pump zone) behind a platform bridge (Homey, Home Assistant): its state, room temperature and power arrive on an MQTT state topic; what a Controller writes to on/off, mode and set point is sent as commands, if enabled.")
 @interface Config {
 
 	@AttributeDefinition(name = "Component-ID", description = "Unique ID of this Component")
@@ -45,6 +45,24 @@ import io.openems.common.types.MeterType;
 
 	@AttributeDefinition(name = "Set point field", description = "JSON field holding the set point, in °C.")
 	String setpointField() default "target_temperature";
+
+	@AttributeDefinition(name = "Send commands", description = "Send what a Controller writes (on/off, mode, set point) to the device. Off: read-only.")
+	boolean commandsEnabled() default false;
+
+	@AttributeDefinition(name = "Command topic", description = "Topic the commands are published to.")
+	String commandTopic() default "energypro/homey/command";
+
+	@AttributeDefinition(name = "Ack topic", description = "Topic the platform acknowledges commands on.")
+	String ackTopic() default "energypro/homey/command/ack";
+
+	@AttributeDefinition(name = "Set point step", description = "The device's set point step in °C (MELCloud: 0.5); set points are rounded to it.")
+	double setpointStep() default 0.5;
+
+	@AttributeDefinition(name = "Minimum command interval", description = "Shortest time between two commands of the same kind, in seconds.")
+	int minCommandIntervalSeconds() default 10;
+
+	@AttributeDefinition(name = "Ack timeout", description = "Seconds after which a command without ack (or a failed one) is sent again.")
+	int ackTimeoutSeconds() default 60;
 
 	@AttributeDefinition(name = "Stale after", description = "Seconds without a state message after which the readings count as stale (fault).")
 	int staleAfterSeconds() default 120;

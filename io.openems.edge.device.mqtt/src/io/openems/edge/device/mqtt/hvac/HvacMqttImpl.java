@@ -8,6 +8,8 @@ import static org.osgi.service.component.annotations.ReferencePolicyOption.GREED
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
 
 import org.osgi.service.component.ComponentContext;
@@ -24,6 +26,7 @@ import org.osgi.service.metatype.annotations.Designate;
 import io.openems.common.referencetarget.GenerateTargetsFromReferences;
 import io.openems.common.types.MeterType;
 import io.openems.edge.bridge.mqtt.api.BridgeMqtt;
+import io.openems.edge.bridge.mqtt.api.BridgeMqtt.MqttSubscription;
 import io.openems.edge.common.component.AbstractOpenemsComponent;
 import io.openems.edge.common.component.ComponentManager;
 import io.openems.edge.common.component.OpenemsComponent;
@@ -52,8 +55,10 @@ import io.openems.edge.timedata.api.utils.CalculateEnergyFromPower;
  * calculated from the power.
  *
  * <p>
- * Read-only for now: what a Controller writes to the {@link Hvac} Channels is
- * not yet sent to the device.
+ * If commands are enabled, what a Controller writes to the {@link Hvac}
+ * Channels is sent to the device ({@link HvacCommandSender}): only on a
+ * change, never just repeated, so a manual change on the device stays until
+ * the wanted value changes.
  */
 @Designate(ocd = Config.class, factory = true)
 @GenerateTargetsFromReferences("mqtt")
@@ -63,6 +68,7 @@ import io.openems.edge.timedata.api.utils.CalculateEnergyFromPower;
 		configurationPolicy = ConfigurationPolicy.REQUIRE)
 @EventTopics({ //
 		EdgeEventConstants.TOPIC_CYCLE_BEFORE_PROCESS_IMAGE, //
+		EdgeEventConstants.TOPIC_CYCLE_EXECUTE_WRITE, //
 		EdgeEventConstants.TOPIC_CYCLE_AFTER_PROCESS_IMAGE //
 })
 public class HvacMqttImpl extends AbstractOpenemsComponent implements HvacMqtt, Hvac, Thermometer,
@@ -83,6 +89,11 @@ public class HvacMqttImpl extends AbstractOpenemsComponent implements HvacMqtt, 
 
 	private Config config;
 	private DeviceLink link;
+	private HvacCommandSender sender;
+	private final List<MqttSubscription> subscriptions = new ArrayList<>();
+	private Boolean wantedOn;
+	private HvacMode wantedMode;
+	private Integer wantedSetpoint;
 
 	public HvacMqttImpl() {
 		super(//
@@ -101,6 +112,18 @@ public class HvacMqttImpl extends AbstractOpenemsComponent implements HvacMqtt, 
 		var readings = new DeviceReadings(config.powerField(), null, false,
 				Duration.ofSeconds(config.staleAfterSeconds()));
 		this.link = new DeviceLink(this.mqtt, config.deviceId(), config.stateTopic(), "", "", readings, null);
+		if (config.commandsEnabled()) {
+			this.sender = new HvacCommandSender(config.deviceId(), config.id(),
+					(int) Math.round(config.setpointStep() * 10), Duration.ofSeconds(config.minCommandIntervalSeconds()),
+					Duration.ofSeconds(config.ackTimeoutSeconds()));
+			var sender = this.sender;
+			this.subscriptions.add(this.mqtt.subscribe(topic(config.ackTopic(), config.deviceId()),
+					message -> sender.onAck(message.payloadAsString())));
+		}
+	}
+
+	private static String topic(String template, String deviceId) {
+		return template.replace(DeviceLink.DEVICE_ID_PLACEHOLDER, deviceId);
 	}
 
 	@Override
@@ -110,6 +133,9 @@ public class HvacMqttImpl extends AbstractOpenemsComponent implements HvacMqtt, 
 			this.link.close();
 			this.link = null;
 		}
+		this.subscriptions.forEach(MqttSubscription::unsubscribe);
+		this.subscriptions.clear();
+		this.sender = null;
 		super.deactivate();
 	}
 
@@ -121,6 +147,7 @@ public class HvacMqttImpl extends AbstractOpenemsComponent implements HvacMqtt, 
 		var now = Instant.now(this.componentManager.getClock());
 		switch (event.getTopic()) {
 		case EdgeEventConstants.TOPIC_CYCLE_BEFORE_PROCESS_IMAGE -> this.updateReadings(now);
+		case EdgeEventConstants.TOPIC_CYCLE_EXECUTE_WRITE -> this.sendCommands(now);
 		case EdgeEventConstants.TOPIC_CYCLE_AFTER_PROCESS_IMAGE -> this.updateEnergy(now);
 		}
 	}
@@ -136,6 +163,34 @@ public class HvacMqttImpl extends AbstractOpenemsComponent implements HvacMqtt, 
 		this.getModeChannel().setNextValue(modeOf(modeText));
 		this.getSetpointChannel().setNextValue(toDeciDegrees(readings.number(this.config.setpointField(), now)));
 		this.link.updateChannels(this, now);
+	}
+
+	// The last written value of each Channel stays wanted until a new one is
+	// written; read-only: written values are dropped
+	private void sendCommands(Instant now) {
+		this.getOnChannel().getNextWriteValueAndReset().ifPresent(value -> this.wantedOn = value);
+		this.getModeChannel().getNextWriteValueAndReset().ifPresent(value -> this.wantedMode = modeOfValue(value));
+		this.getSetpointChannel().getNextWriteValueAndReset().ifPresent(value -> this.wantedSetpoint = value);
+		var sender = this.sender;
+		if (sender == null) {
+			return;
+		}
+		var commandTopic = topic(this.config.commandTopic(), this.config.deviceId());
+		for (var json : sender.next(now,
+				new HvacCommandSender.Wanted(this.wantedOn, this.wantedMode, this.wantedSetpoint))) {
+			this.mqtt.publish(commandTopic, json);
+		}
+		this.channel(MqttDevice.ChannelId.COMMAND_FAILED).setNextValue(sender.lastCommandFailed());
+		this.channel(MqttDevice.ChannelId.COMMAND_UNACKNOWLEDGED).setNextValue(sender.unacknowledged(now));
+	}
+
+	private static HvacMode modeOfValue(int value) {
+		for (var mode : HvacMode.values()) {
+			if (mode.getValue() == value) {
+				return mode;
+			}
+		}
+		return HvacMode.UNDEFINED;
 	}
 
 	private void updateEnergy(Instant now) {
