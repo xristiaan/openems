@@ -7,8 +7,14 @@ package io.openems.edge.scheduling.algorithm;
  * reduce to this same shape: a point target is {@code min == max}; a
  * deadline is an unconstrained band ({@link #unconstrained()}) everywhere
  * except the deadline slot itself, where it narrows to a point (or near-
- * point) target with a large {@code weightPerUnitPerSlot} — graded, not
- * boolean, so a 79% shortfall costs less than a 45% one.
+ * point) target with a large weight — graded, not boolean, so a 79%
+ * shortfall costs less than a 45% one.
+ *
+ * <p>
+ * The cost of a deviation {@code d} outside the band is
+ * {@code linear · d + quadratic · d²}, set separately below {@code min} and
+ * above {@code max}: linear for a battery's SoC band, quadratic for a Comfort
+ * Zone, where small deviations are cheap and large ones very expensive.
  *
  * <p>
  * This is deliberately the <em>deviation-cost</em> target, used uniformly
@@ -17,26 +23,57 @@ package io.openems.edge.scheduling.algorithm;
  * since a device can be deliberately run off-schedule (e.g. an explicit
  * Set-Point override) without that being scored as a "deviation."
  *
- * @param min                   lower bound of the acceptable band
- * @param max                   upper bound of the acceptable band
- * @param weightPerUnitPerSlot  cost per unit of deviation per slot outside
- *                                  [min, max] — the same mechanism serves
- *                                  both the Power Calculation Weights'
- *                                  "deviation cost" and "missed deadline
- *                                  cost," differing only in which value is
- *                                  used for a given slot
+ * @param min             lower bound of the acceptable band
+ * @param max             upper bound of the acceptable band
+ * @param linearBelow     cost per unit of deviation per slot below
+ *                            {@code min}
+ * @param quadraticBelow  cost per unit² of deviation per slot below
+ *                            {@code min}
+ * @param linearAbove     cost per unit of deviation per slot above
+ *                            {@code max}
+ * @param quadraticAbove  cost per unit² of deviation per slot above
+ *                            {@code max}
  */
-public record SlotTarget(double min, double max, double weightPerUnitPerSlot) {
+public record SlotTarget(double min, double max, double linearBelow, double quadraticBelow, double linearAbove,
+		double quadraticAbove) {
+
+	/**
+	 * A band with the same linear cost on both sides — the "deviation cost"
+	 * and "missed deadline cost" of the Power Calculation Weights.
+	 *
+	 * @param min                  lower bound of the acceptable band
+	 * @param max                  upper bound of the acceptable band
+	 * @param weightPerUnitPerSlot cost per unit of deviation per slot outside
+	 *                                 [min, max]
+	 */
+	public SlotTarget(double min, double max, double weightPerUnitPerSlot) {
+		this(min, max, weightPerUnitPerSlot, 0, weightPerUnitPerSlot, 0);
+	}
 
 	/**
 	 * A point target: the state should be exactly {@code value}.
 	 *
-	 * @param value               the target value
+	 * @param value                the target value
 	 * @param weightPerUnitPerSlot cost per unit of deviation per slot
 	 * @return the point target
 	 */
 	public static SlotTarget point(double value, double weightPerUnitPerSlot) {
 		return new SlotTarget(value, value, weightPerUnitPerSlot);
+	}
+
+	/**
+	 * A point target with a cost of {@code a · d + b · d²} per slot,
+	 * separately below and above it.
+	 *
+	 * @param value  the target value
+	 * @param aBelow linear cost per slot below the target
+	 * @param bBelow quadratic cost per slot below the target
+	 * @param aAbove linear cost per slot above the target
+	 * @param bAbove quadratic cost per slot above the target
+	 * @return the point target
+	 */
+	public static SlotTarget quadratic(double value, double aBelow, double bBelow, double aAbove, double bAbove) {
+		return new SlotTarget(value, value, aBelow, bBelow, aAbove, bAbove);
 	}
 
 	/**
@@ -66,13 +103,21 @@ public record SlotTarget(double min, double max, double weightPerUnitPerSlot) {
 	}
 
 	/**
-	 * Deviation cost for this slot: {@link #deviationOf(double)} times the
-	 * configured weight.
+	 * Deviation cost for this slot: {@code a · d + b · d²} with the weights of
+	 * the side the value is on.
 	 *
 	 * @param value the value to score, typically avg(startState, endState)
 	 * @return the cost
 	 */
 	public double costOf(double value) {
-		return this.deviationOf(value) * this.weightPerUnitPerSlot;
+		if (value < this.min) {
+			var d = this.min - value;
+			return this.linearBelow * d + this.quadraticBelow * d * d;
+		}
+		if (value > this.max) {
+			var d = value - this.max;
+			return this.linearAbove * d + this.quadraticAbove * d * d;
+		}
+		return 0;
 	}
 }
