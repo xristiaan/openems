@@ -2,6 +2,7 @@ package io.openems.edge.thermometer.api;
 
 import org.osgi.annotation.versioning.ProviderType;
 
+import io.openems.common.channel.PersistencePriority;
 import io.openems.common.channel.Unit;
 import io.openems.common.types.OpenemsType;
 import io.openems.edge.common.channel.Doc;
@@ -23,7 +24,8 @@ public interface Thermometer extends OpenemsComponent {
 		 * </ul>
 		 */
 		TEMPERATURE(Doc.of(OpenemsType.INTEGER) //
-				.unit(Unit.DEZIDEGREE_CELSIUS));
+				.unit(Unit.DEZIDEGREE_CELSIUS) //
+				.persistencePriority(PersistencePriority.HIGH));
 
 		private final Doc doc;
 

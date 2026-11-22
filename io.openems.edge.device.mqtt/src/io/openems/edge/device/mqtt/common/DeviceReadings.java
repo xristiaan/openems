@@ -32,6 +32,7 @@ public class DeviceReadings {
 	private Double powerW;
 	private Double soc;
 	private Instant lastMessageAt;
+	private final JsonObject state = new JsonObject();
 
 	/**
 	 * Creates the readings.
@@ -65,6 +66,9 @@ public class DeviceReadings {
 			return false;
 		}
 		this.lastMessageAt = now;
+		for (var entry : state.entrySet()) {
+			this.state.add(entry.getKey(), entry.getValue());
+		}
 		var power = number(state, this.powerField);
 		if (power != null) {
 			this.powerW = this.powerInverted ? -power : power;
@@ -77,11 +81,53 @@ public class DeviceReadings {
 	}
 
 	private static Double number(JsonObject state, String field) {
-		var element = state.get(field);
+		var element = field == null ? null : state.get(field);
 		if (element == null || !element.isJsonPrimitive() || !element.getAsJsonPrimitive().isNumber()) {
 			return null;
 		}
 		return element.getAsDouble();
+	}
+
+	/**
+	 * The latest number in a field, or null if stale, absent or not a number.
+	 *
+	 * @param field the JSON field
+	 * @param now   the current time
+	 * @return the value
+	 */
+	public synchronized Double number(String field, Instant now) {
+		return this.isStale(now) ? null : number(this.state, field);
+	}
+
+	/**
+	 * The latest boolean in a field, or null if stale, absent or not a
+	 * boolean.
+	 *
+	 * @param field the JSON field
+	 * @param now   the current time
+	 * @return the value
+	 */
+	public synchronized Boolean bool(String field, Instant now) {
+		var element = this.isStale(now) || field == null ? null : this.state.get(field);
+		if (element == null || !element.isJsonPrimitive() || !element.getAsJsonPrimitive().isBoolean()) {
+			return null;
+		}
+		return element.getAsBoolean();
+	}
+
+	/**
+	 * The latest string in a field, or null if stale, absent or not a string.
+	 *
+	 * @param field the JSON field
+	 * @param now   the current time
+	 * @return the value
+	 */
+	public synchronized String text(String field, Instant now) {
+		var element = this.isStale(now) || field == null ? null : this.state.get(field);
+		if (element == null || !element.isJsonPrimitive() || !element.getAsJsonPrimitive().isString()) {
+			return null;
+		}
+		return element.getAsString();
 	}
 
 	/**

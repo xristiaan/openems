@@ -9,8 +9,10 @@ Bundle-Version: 1.0.0.${tstamp}
 	io.openems.edge.bridge.mqtt,\
 	io.openems.edge.common,\
 	io.openems.edge.ess.api,\
+	io.openems.edge.hvac.api,\
 	io.openems.edge.meter.api,\
 	io.openems.edge.pvinverter.api,\
+	io.openems.edge.thermometer.api,\
 	io.openems.edge.timedata.api,\
 
 -testpath: \

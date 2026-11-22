@@ -35,7 +35,8 @@ public class DeviceLink {
 	 * @param commandTopic the platform's command topic
 	 * @param ackTopic     the platform's ack topic
 	 * @param readings     the readings to fill
-	 * @param sender       the command sender
+	 * @param sender       the command sender, or null for a read-only device
+	 *                     (no commands, no ack subscription)
 	 */
 	public DeviceLink(BridgeMqtt mqtt, String deviceId, String stateTopic, String commandTopic, String ackTopic,
 			DeviceReadings readings, CommandSender sender) {
@@ -45,8 +46,10 @@ public class DeviceLink {
 		this.commandTopic = topic(commandTopic, deviceId);
 		this.subscriptions.add(mqtt.subscribe(topic(stateTopic, deviceId),
 				message -> readings.onMessage(message.payloadAsString(), Instant.now())));
-		this.subscriptions.add(mqtt.subscribe(topic(ackTopic, deviceId),
-				message -> sender.onAck(message.payloadAsString())));
+		if (sender != null) {
+			this.subscriptions.add(mqtt.subscribe(topic(ackTopic, deviceId),
+					message -> sender.onAck(message.payloadAsString())));
+		}
 	}
 
 	private static String topic(String template, String deviceId) {
@@ -80,6 +83,9 @@ public class DeviceLink {
 	 * @param fraction the value as a fraction of the rating, or null
 	 */
 	public void send(Instant now, int valueW, Double fraction) {
+		if (this.sender == null) {
+			return;
+		}
 		this.sender.next(now, valueW, fraction).ifPresent(json -> this.mqtt.publish(this.commandTopic, json));
 	}
 
@@ -91,6 +97,9 @@ public class DeviceLink {
 	 */
 	public void updateChannels(OpenemsComponent component, Instant now) {
 		component.channel(MqttDevice.ChannelId.STATE_STALE).setNextValue(this.readings.isStale(now));
+		if (this.sender == null) {
+			return;
+		}
 		component.channel(MqttDevice.ChannelId.COMMAND_FAILED).setNextValue(this.sender.lastCommandFailed());
 		component.channel(MqttDevice.ChannelId.COMMAND_UNACKNOWLEDGED).setNextValue(this.sender.unacknowledged(now));
 		component.channel(MqttDevice.ChannelId.COMMANDED_POWER).setNextValue(this.sender.lastValueW());

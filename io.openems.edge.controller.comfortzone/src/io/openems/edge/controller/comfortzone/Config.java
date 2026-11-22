@@ -33,7 +33,7 @@ import io.openems.edge.hvac.api.HvacMode;
 	@AttributeDefinition(name = "Fallback outdoor temperature", description = "Used for slots without a forecast, in °C.")
 	double fallbackOutdoorTemperature() default 10.0;
 
-	@AttributeDefinition(name = "HVAC mode", description = "Heat or cool.")
+	@AttributeDefinition(name = "HVAC mode", description = "HEAT or COOL (OFF is only read back from a device).")
 	HvacMode hvacMode() default HvacMode.HEAT;
 
 	@AttributeDefinition(name = "Device type", description = "Modulating (inverter compressor, heat pump): switching is free. On-off (fixed-speed compressor): a start costs the Start Cost.")

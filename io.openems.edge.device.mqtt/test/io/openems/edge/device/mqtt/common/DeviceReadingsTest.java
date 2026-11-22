@@ -60,4 +60,21 @@ class DeviceReadingsTest {
 		assertNull(readings.powerW(T0));
 		assertEquals(100, readings.soc(T0), "clamped to 0-100");
 	}
+
+	@Test
+	void anyFieldCanBeReadByType() {
+		var readings = new DeviceReadings("measure_power", null, false, Duration.ofSeconds(120));
+		readings.onMessage("{\"measure_temperature\": 19.5, \"onoff\": true, \"thermostat_mode\": \"heat\"}", T0);
+		readings.onMessage("{\"target_temperature\": 20}", T0.plusSeconds(5));
+
+		var now = T0.plusSeconds(5);
+		assertEquals(19.5, readings.number("measure_temperature", now));
+		assertEquals(20.0, readings.number("target_temperature", now));
+		assertTrue(readings.bool("onoff", now));
+		assertEquals("heat", readings.text("thermostat_mode", now));
+		assertNull(readings.number("thermostat_mode", now), "wrong type");
+		assertNull(readings.text("onoff", now), "wrong type");
+		assertNull(readings.bool("missing", now));
+		assertNull(readings.text("thermostat_mode", T0.plusSeconds(200)), "stale");
+	}
 }
