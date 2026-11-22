@@ -190,7 +190,7 @@ public class ControllerComfortZoneImpl extends AbstractOpenemsComponent
 				.setNextValue((int) Math.round(slot.energyUsedWh() / TimeSlot.DURATION_HOURS));
 
 		var roomDeci = this.room.getTemperature().get();
-		var command = command(this.config.hvacMode(), slot.mode(), slot.targetSetpoint(),
+		var command = command(this.config.hvacMode(), slot.mode(), slot.targetSetpoint(), slot.endState(),
 				roomDeci == null ? null : roomDeci / 10.0, this.config.minTemperature(), this.config.maxTemperature());
 		this.channel(ControllerComfortZone.ChannelId.PLANNED_SETPOINT).setNextValue(command.setpointDeci());
 
@@ -213,25 +213,32 @@ public class ControllerComfortZoneImpl extends AbstractOpenemsComponent
 	/**
 	 * The command for a planned slot. OFF switches the device off, except as
 	 * frost protection (heating) or overheating protection (cooling) near the
-	 * physical limits; the other modes switch it on with the slot's set point.
+	 * physical limits. The other modes switch it on with the room temperature
+	 * the plan expects at the end of the slot as the set point — never beyond
+	 * the mode's goal: the device's own thermostat decides its power, so
+	 * sending the goal (e.g. BOOST's target + BoostOffset) would make it run
+	 * at full power where the plan has less (a slot cut by the budget).
 	 *
-	 * @param hvacMode heat or cool
-	 * @param mode     the planned mode
-	 * @param setpoint the slot's set point in °C, null for OFF
-	 * @param roomC    the room temperature in °C, or null if unknown
-	 * @param minC     the minimum temperature
-	 * @param maxC     the maximum temperature
+	 * @param hvacMode  heat or cool
+	 * @param mode      the planned mode
+	 * @param goalC     the mode's goal in °C, null for OFF
+	 * @param plannedC  the planned room temperature at the end of the slot, in
+	 *                      °C
+	 * @param roomC     the room temperature in °C, or null if unknown
+	 * @param minC      the minimum temperature
+	 * @param maxC      the maximum temperature
 	 * @return the command
 	 */
-	static Command command(HvacMode hvacMode, ComfortZoneMode mode, Double setpoint, Double roomC, double minC,
-			double maxC) {
+	static Command command(HvacMode hvacMode, ComfortZoneMode mode, Double goalC, double plannedC, Double roomC,
+			double minC, double maxC) {
 		var heating = hvacMode != HvacMode.COOL;
-		if (mode == ComfortZoneMode.OFF || setpoint == null) {
+		if (mode == ComfortZoneMode.OFF || goalC == null) {
 			var protect = roomC != null
 					&& (heating ? roomC < minC + PROTECTION_MARGIN_K : roomC > maxC - PROTECTION_MARGIN_K);
 			return protect ? new Command(true, deci(heating ? minC : maxC)) : new Command(false, null);
 		}
-		return new Command(true, deci(Math.max(minC, Math.min(maxC, setpoint))));
+		var setpointC = heating ? Math.min(plannedC, goalC) : Math.max(plannedC, goalC);
+		return new Command(true, deci(Math.max(minC, Math.min(maxC, setpointC))));
 	}
 
 	private ZonePlanning planning(Instant start, int slotCount) {
