@@ -27,6 +27,8 @@ import io.openems.edge.hvac.api.HvacMode;
  * A command is sent only when the wanted value changes, at most once per
  * minimum interval — never just repeated, so a change made by hand on the
  * device is not overwritten as long as the wanted value stays the same. A
+ * field that is not wanted (null) is forgotten: its next wanted value is sent
+ * even if it equals the last one. A
  * command that failed or was not acknowledged within the ack timeout is sent
  * again. While the device is to be off, only the {@code off} is sent: on some
  * platforms (MELCloud) a mode switches the device on.
@@ -98,6 +100,8 @@ public class HvacCommandSender {
 		var result = new ArrayList<String>();
 		if (wanted.on() != null) {
 			this.sendIfDue(now, Field.ON, new Command(wanted.on() ? "on" : "off", null), result);
+		} else {
+			this.forget(Field.ON);
 		}
 		if (Boolean.FALSE.equals(wanted.on())) {
 			return result;
@@ -105,12 +109,25 @@ public class HvacCommandSender {
 		if (wanted.mode() == HvacMode.HEAT || wanted.mode() == HvacMode.COOL) {
 			this.sendIfDue(now, Field.MODE, new Command("set-mode", wanted.mode().name().toLowerCase(Locale.ROOT)),
 					result);
+		} else if (wanted.mode() == null) {
+			this.forget(Field.MODE);
 		}
 		if (wanted.setpointDeci() != null) {
 			this.sendIfDue(now, Field.SETPOINT, new Command("set-setpoint", this.toCelsius(wanted.setpointDeci())),
 					result);
+		} else {
+			this.forget(Field.SETPOINT);
 		}
 		return result;
+	}
+
+	// Nobody wants this field now: the next wanted value is sent as new, even if
+	// it equals the last one (the device may have been changed by hand meanwhile)
+	private void forget(Field field) {
+		this.sent.remove(field);
+		this.sentAt.remove(field);
+		this.failed.remove(field);
+		this.pending.values().removeIf(field::equals);
 	}
 
 	private void sendIfDue(Instant now, Field field, Command command, List<String> result) {

@@ -1,6 +1,7 @@
 package io.openems.edge.controller.comfortzone;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import java.time.Instant;
@@ -36,6 +37,17 @@ class ZoneScheduleTest {
 		assertEquals(20, targets[0]);
 		assertEquals(20, targets[1]);
 		assertEquals(21, targets[2]);
+	}
+
+	@Test
+	void theNextChangeIsTheNextEntryStart() {
+		var schedule = ZoneSchedule.parse("09:00=19.5, 21:00=5", 20, AMSTERDAM);
+
+		assertEquals(Instant.parse("2026-11-23T20:00:00Z"), schedule.nextChange(Instant.parse("2026-11-23T12:00:00Z")));
+		assertEquals(Instant.parse("2026-11-24T08:00:00Z"), schedule.nextChange(Instant.parse("2026-11-23T20:00:00Z")),
+				"at an entry start: the one after it, tomorrow");
+		assertEquals(Instant.parse("2026-11-23T08:00:00Z"), schedule.nextChange(Instant.parse("2026-11-23T03:00:00Z")));
+		assertNull(ZoneSchedule.parse("", 20, AMSTERDAM).nextChange(Instant.parse("2026-11-23T03:00:00Z")));
 	}
 
 	@Test

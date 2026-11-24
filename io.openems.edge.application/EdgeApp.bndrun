@@ -209,6 +209,7 @@
 	bnd.identity;id='io.openems.edge.phoenixcontact.plcnext',\
 	bnd.identity;id='io.openems.edge.predictor.lstm',\
 	bnd.identity;id='io.openems.edge.predictor.persistencemodel',\
+	bnd.identity;id='io.openems.edge.predictor.weather',\
 	bnd.identity;id='io.openems.edge.predictor.production.linearmodel',\
 	bnd.identity;id='io.openems.edge.predictor.profileclusteringmodel',\
 	bnd.identity;id='io.openems.edge.predictor.similardaymodel',\
@@ -433,6 +434,7 @@
 	io.openems.edge.predictor.api;version=snapshot,\
 	io.openems.edge.predictor.lstm;version=snapshot,\
 	io.openems.edge.predictor.persistencemodel;version=snapshot,\
+	io.openems.edge.predictor.weather;version=snapshot,\
 	io.openems.edge.predictor.production.linearmodel;version=snapshot,\
 	io.openems.edge.predictor.profileclusteringmodel;version=snapshot,\
 	io.openems.edge.predictor.similardaymodel;version=snapshot,\

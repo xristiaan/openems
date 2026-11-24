@@ -2,6 +2,7 @@ package io.openems.edge.controller.comfortzone;
 
 import io.openems.common.channel.AccessMode;
 import io.openems.common.channel.Level;
+import io.openems.common.channel.PersistencePriority;
 import io.openems.common.channel.Unit;
 import io.openems.common.types.OpenemsType;
 import io.openems.edge.common.channel.Doc;
@@ -17,11 +18,13 @@ public interface ControllerComfortZone extends Controller, OpenemsComponent {
 
 		/** The set point sent to the device, in deci-degrees Celsius. */
 		PLANNED_SETPOINT(Doc.of(OpenemsType.INTEGER) //
-				.unit(Unit.DEZIDEGREE_CELSIUS)),
+				.unit(Unit.DEZIDEGREE_CELSIUS) //
+				.persistencePriority(PersistencePriority.HIGH)),
 
 		/** The planned average electrical power of the current slot. */
 		PLANNED_POWER(Doc.of(OpenemsType.INTEGER) //
-				.unit(Unit.WATT)),
+				.unit(Unit.WATT) //
+				.persistencePriority(PersistencePriority.HIGH)),
 
 		/**
 		 * Optional external set point (the specification's {@code setpointT}), in
@@ -34,6 +37,12 @@ public interface ControllerComfortZone extends Controller, OpenemsComponent {
 
 		/** No plan yet, or the active plan has run out: the device is left as it is. */
 		NO_PLAN_AVAILABLE(Doc.of(Level.INFO)),
+
+		/**
+		 * A manual change on the device is followed: nothing is sent until the next
+		 * step in the schedule.
+		 */
+		MANUAL_OVERRIDE(Doc.of(Level.INFO)),
 
 		/** No outdoor temperature forecast: the fallback temperature is used. */
 		NO_OUTDOOR_FORECAST(Doc.of(Level.INFO)),

@@ -90,6 +90,28 @@ public final class ZoneSchedule {
 	}
 
 	/**
+	 * The next step in the schedule: when the next entry starts.
+	 *
+	 * @param time the instant
+	 * @return the first entry start after {@code time}, or null without entries
+	 */
+	public Instant nextChange(Instant time) {
+		if (this.entries.isEmpty()) {
+			return null;
+		}
+		var date = time.atZone(this.zone).toLocalDate();
+		for (var day = 0; day <= 1; day++) {
+			for (var entry : this.entries) {
+				var start = date.plusDays(day).atTime(entry.from()).atZone(this.zone).toInstant();
+				if (start.isAfter(time)) {
+					return start;
+				}
+			}
+		}
+		return null; // not reached: tomorrow's first entry is always after time
+	}
+
+	/**
 	 * The target per slot.
 	 *
 	 * @param start     the start of slot 0

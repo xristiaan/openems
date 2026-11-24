@@ -80,6 +80,7 @@ public class ControllerComfortZoneImpl extends AbstractOpenemsComponent
 	private Config config;
 	private Efficiency efficiency;
 	private ZoneSchedule schedule;
+	private ManualOverride manualOverride;
 
 	private ComfortZoneMode priorMode = ComfortZoneMode.OFF;
 
@@ -99,6 +100,9 @@ public class ControllerComfortZoneImpl extends AbstractOpenemsComponent
 	private void activate(ComponentContext context, Config config) {
 		super.activate(context, config.id(), config.alias(), config.enabled());
 		this.config = config;
+		this.manualOverride = new ManualOverride((int) Math.round(config.manualChangeTolerance() * 10),
+				Duration.ofSeconds(config.manualChangeSettlingSeconds()),
+				config.manualOverrideMaxMinutes() > 0 ? Duration.ofMinutes(config.manualOverrideMaxMinutes()) : null);
 		try {
 			this.efficiency = Efficiency.parse(config.copPoints(), config.eerPoints());
 			var heating = config.hvacMode() != HvacMode.COOL;
@@ -190,9 +194,25 @@ public class ControllerComfortZoneImpl extends AbstractOpenemsComponent
 				.setNextValue((int) Math.round(slot.energyUsedWh() / TimeSlot.DURATION_HOURS));
 
 		var roomDeci = this.room.getTemperature().get();
-		var command = command(this.config.hvacMode(), slot.mode(), slot.targetSetpoint(), slot.endState(),
-				roomDeci == null ? null : roomDeci / 10.0, this.config.minTemperature(), this.config.maxTemperature());
+		var roomC = roomDeci == null ? null : roomDeci / 10.0;
+		var command = command(this.config.hvacMode(), slot.mode(), slot.targetSetpoint(), slot.endState(), roomC,
+				this.config.minTemperature(), this.config.maxTemperature());
 		this.channel(ControllerComfortZone.ChannelId.PLANNED_SETPOINT).setNextValue(command.setpointDeci());
+
+		var hold = this.manualOverride.hold(now,
+				new ManualOverride.Sent(command.on(), this.config.hvacMode(), command.setpointDeci()),
+				new ManualOverride.Readback(this.hvac.getOnChannel().value().get(),
+						modeOf(this.hvac.getModeChannel().value().get()), this.hvac.getSetpointChannel().value().get()),
+				this.schedule.nextChange(now));
+		this.channel(ControllerComfortZone.ChannelId.MANUAL_OVERRIDE).setNextValue(hold);
+		if (hold) {
+			// Nothing is sent during a manual override, except a hard safety limit
+			command = protection(this.config.hvacMode(), roomC, this.config.minTemperature(),
+					this.config.maxTemperature());
+			if (command == null) {
+				return;
+			}
+		}
 
 		this.hvac.getOnChannel().setNextWriteValue(command.on());
 		this.hvac.getModeChannel().setNextWriteValue(this.config.hvacMode());
@@ -233,12 +253,39 @@ public class ControllerComfortZoneImpl extends AbstractOpenemsComponent
 			double minC, double maxC) {
 		var heating = hvacMode != HvacMode.COOL;
 		if (mode == ComfortZoneMode.OFF || goalC == null) {
-			var protect = roomC != null
-					&& (heating ? roomC < minC + PROTECTION_MARGIN_K : roomC > maxC - PROTECTION_MARGIN_K);
-			return protect ? new Command(true, deci(heating ? minC : maxC)) : new Command(false, null);
+			var protection = protection(hvacMode, roomC, minC, maxC);
+			return protection != null ? protection : new Command(false, null);
 		}
 		var setpointC = heating ? Math.min(plannedC, goalC) : Math.max(plannedC, goalC);
 		return new Command(true, deci(Math.max(minC, Math.min(maxC, setpointC))));
+	}
+
+	/**
+	 * Frost protection (heating) or overheating protection (cooling): on at the
+	 * physical limit when the room is within the margin of it.
+	 *
+	 * @param hvacMode heat or cool
+	 * @param roomC    the room temperature in °C, or null if unknown
+	 * @param minC     the minimum temperature
+	 * @param maxC     the maximum temperature
+	 * @return the protecting command, or null if none is needed
+	 */
+	static Command protection(HvacMode hvacMode, Double roomC, double minC, double maxC) {
+		var heating = hvacMode != HvacMode.COOL;
+		var protect = roomC != null
+				&& (heating ? roomC < minC + PROTECTION_MARGIN_K : roomC > maxC - PROTECTION_MARGIN_K);
+		return protect ? new Command(true, deci(heating ? minC : maxC)) : null;
+	}
+
+	private static HvacMode modeOf(Integer value) {
+		if (value != null) {
+			for (var mode : HvacMode.values()) {
+				if (mode.getValue() == value) {
+					return mode;
+				}
+			}
+		}
+		return HvacMode.UNDEFINED;
 	}
 
 	private ZonePlanning planning(Instant start, int slotCount) {
@@ -254,7 +301,31 @@ public class ControllerComfortZoneImpl extends AbstractOpenemsComponent
 		var cost = new ZonePlanning.DeviationCost(config.deviationCostUncomfortableA(),
 				config.deviationCostUncomfortableB(), config.deviationCostOtherA(), config.deviationCostOtherB());
 		return new ZonePlanning(physics, matrix, config.boostOffset(), cost, config.endOfHorizonFactor(),
-				this.setpointC(), this.schedule.targets(start, slotCount));
+				this.setpointC(), this.targets(start, slotCount));
+	}
+
+	/**
+	 * The schedule's targets per slot; during a manual override the manual
+	 * value until the override ends (switched off by hand: the physical limit,
+	 * so the plan is OFF).
+	 *
+	 * @param start     the start of slot 0
+	 * @param slotCount the number of slots
+	 * @return one target per slot, in °C
+	 */
+	private double[] targets(Instant start, int slotCount) {
+		var targets = this.schedule.targets(start, slotCount);
+		var heating = this.config.hvacMode() != HvacMode.COOL;
+		var manualC = this.manualOverride.targetC(heating ? this.config.minTemperature() : this.config.maxTemperature());
+		if (manualC != null) {
+			var until = this.manualOverride.until();
+			for (var i = 0; i < slotCount; i++) {
+				if (until == null || start.plusSeconds(i * SLOT_SECONDS).isBefore(until)) {
+					targets[i] = manualC;
+				}
+			}
+		}
+		return targets;
 	}
 
 	/**

@@ -57,8 +57,9 @@ import io.openems.edge.timedata.api.utils.CalculateEnergyFromPower;
  * <p>
  * If commands are enabled, what a Controller writes to the {@link Hvac}
  * Channels is sent to the device ({@link HvacCommandSender}): only on a
- * change, never just repeated, so a manual change on the device stays until
- * the wanted value changes.
+ * change, never just repeated, so a manual change on the device stays while
+ * the Controller keeps writing the same value. A Channel no Controller writes
+ * is left as the device has it.
  */
 @Designate(ocd = Config.class, factory = true)
 @GenerateTargetsFromReferences("mqtt")
@@ -165,12 +166,13 @@ public class HvacMqttImpl extends AbstractOpenemsComponent implements HvacMqtt, 
 		this.link.updateChannels(this, now);
 	}
 
-	// The last written value of each Channel stays wanted until a new one is
-	// written; read-only: written values are dropped
+	// What a Controller writes is wanted for this cycle only: a Channel nobody
+	// writes (e.g. a Controller following a manual change) is left alone, and
+	// sent again once written. Read-only: written values are dropped
 	private void sendCommands(Instant now) {
-		this.getOnChannel().getNextWriteValueAndReset().ifPresent(value -> this.wantedOn = value);
-		this.getModeChannel().getNextWriteValueAndReset().ifPresent(value -> this.wantedMode = modeOfValue(value));
-		this.getSetpointChannel().getNextWriteValueAndReset().ifPresent(value -> this.wantedSetpoint = value);
+		this.wantedOn = this.getOnChannel().getNextWriteValueAndReset().orElse(null);
+		this.wantedMode = this.getModeChannel().getNextWriteValueAndReset().map(HvacMqttImpl::modeOfValue).orElse(null);
+		this.wantedSetpoint = this.getSetpointChannel().getNextWriteValueAndReset().orElse(null);
 		var sender = this.sender;
 		if (sender == null) {
 			return;

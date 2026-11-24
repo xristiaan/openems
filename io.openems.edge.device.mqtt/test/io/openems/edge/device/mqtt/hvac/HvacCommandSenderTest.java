@@ -85,6 +85,21 @@ class HvacCommandSenderTest {
 	}
 
 	@Test
+	void aValueNobodyWantedIsSentAgainOnceWanted() {
+		var sender = sender();
+		sender.next(T0, new Wanted(true, HvacMode.HEAT, 200));
+		sender.onAck(ack("c1", "ok"));
+		sender.onAck(ack("c2", "ok"));
+		sender.onAck(ack("c3", "ok"));
+
+		assertEquals(List.of(), sender.next(T0.plusSeconds(60), new Wanted(null, null, null)),
+				"a Controller following a manual change writes nothing");
+		assertEquals(List.of("on", "set-mode heat", "set-setpoint 20.0"),
+				verbs(sender.next(T0.plusSeconds(61), new Wanted(true, HvacMode.HEAT, 200))),
+				"after the override: sent again, the device may differ");
+	}
+
+	@Test
 	void unknownValuesAreNotSent() {
 		var sender = sender();
 		assertEquals(List.of("set-setpoint 19.5"), verbs(sender.next(T0, new Wanted(null, HvacMode.OFF, 195))));
